@@ -1,4 +1,4 @@
-Firefighter Intervention Simulator and Decision Making Agent
+# Firefighter Intervention Simulator and Decision Making Agent
 
 Examples of how to use the code are displayed [here](Examples.ipynb)
 
