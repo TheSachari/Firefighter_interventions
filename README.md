@@ -28,7 +28,8 @@ Hyperparameters for the Agent.
 
 ## Agent models
 
-2 models are implemented: Rainbow DQN and FQF. Code is based on the excellent work from [Sebastian Dittert](https://github.com/BY571)
+2 models are implemented: Rainbow DQN and FQF. Code is based on the excellent work from [Sebastian Dittert](https://github.com/BY571).  
+
 The Munchausen RL as well as Intrinsic Curiosity are also implemented for both DQN and FQF. Code is based on the excellent work from [Sebastian Dittert](https://github.com/BY571)
 
 ## Stats
