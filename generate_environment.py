@@ -481,7 +481,7 @@ if __name__ == "__main__":
     is_fake = False
     df_pc_real = pd.read_pickle("df_real.pkl")
     window = len(df_pc_real)
-    print("window:", window)
+    print("window real:", window)
     df_pc_real = precompute_pdd(df_pdd, df_pc_real, stations_u)
     df_pc_real = precompute_zone(df_stations, df_pc_real, Z_1, Z_2, Z_3)
     df_pc_real = precompute_incident(df_rank_incident, df_pc_real)
@@ -527,9 +527,16 @@ if __name__ == "__main__":
     dfs_to_concat = []
     start_year = 2018
     start_inter = 1
-    end_inter = window
+    window = 0
+    end_inter = 0
 
     for sample_file in args.sample_list:
+
+        start_inter += window
+        window = len(pd.read_pickle(sample_file))
+        print("window fake:", window)
+        end_inter += window
+
 
         print("start_year", start_year, "start_inter", start_inter, "end_inter", end_inter)
 
@@ -558,8 +565,7 @@ if __name__ == "__main__":
         print(sample_file, len(df_pc_fake), "done")
         dfs_to_concat.append(df_pc_fake)
         start_year += 1
-        start_inter += window
-        end_inter += window
+
 
 
     df_pc_fake = pd.concat(dfs_to_concat, ignore_index=True)

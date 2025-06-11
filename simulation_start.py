@@ -22,7 +22,6 @@ if __name__ == "__main__":
     parser.add_argument("--is_best", action='store_true', help="Best logic or random logic")
     parser.add_argument("--start", type=int, help="start from num_inter")
     parser.add_argument("--end", type=int, help="end after num_inter")
-    parser.add_argument("--reward_weights", type=str, help="JSON file with reward weights")
     parser.add_argument("--save_metrics_as", type=str, help="save dic_indic as")
     parser.add_argument("--constraint_factor_veh", type=int, default=1, help="size of available vehicles in Z1. factor 1 is 100%, factor 3 is 33%")
     parser.add_argument("--constraint_factor_ff", type=int, default=1, help="size of available firefighters. factor 1 is 100%, factor 3 is 33%")
@@ -36,15 +35,15 @@ if __name__ == "__main__":
 
     ### LOAD ENVIRONMENT VARIABLES ###
 
-    dic_tarif, dic_vehicles, dic_functions, df_skills, dic_roles_skills, dic_roles, planning, dic_inter, \
-    dic_ff, dic_indic, dic_indic_old, Z_1, dic_lent, dic_station_distance, df_pc, old_date, date_reference, \
-    skills_updated = load_environment_variables(args.reward_weights, args.constraint_factor_veh, args.constraint_factor_ff, \
+    dic_vehicles, dic_functions, df_skills, dic_roles_skills, dic_roles, planning, dic_inter, \
+    dic_ff, dic_indic, dic_indic_old, Z_1, Z_4, dic_lent, dic_station_distance, df_pc, old_date, date_reference, \
+    skills_updated = load_environment_variables(args.constraint_factor_veh, args.constraint_factor_ff, \
                                                 args.dataset, args.start, args.end)
     
     vehicle_out, num_d, score, action_num = 0, 42, 0, 0
     all_ff_waiting, v_waiting, following_depart = (False,) * 3
     
-    vehicle_evo, reward_evo, current_ff_inter = [], [], []
+    vehicle_evo, current_ff_inter = [], []
     dic_log, dic_back, dic_start_time, dic_veh_typ = {}, {}, {}, {}
     
     VSAV_to_station, VSAV_from_station = "", ""
@@ -145,8 +144,10 @@ if __name__ == "__main__":
                     num_d, list_v = next(required_vehicles, (0, [])) # On cherche les véhicules requis dans le train initial
                     # print("start", "num_d", num_d, "list_v", list_v)
                     if station_lvl > 1 and num_d == 1:
-                        dic_indic['v1_not_sent_from_1st_station'] += 1
+                        dic_indic['v1_not_sent_from_s1'] += 1
                         # print("v1_not_sent_from_1st_station", station_lvl)
+                    if station_lvl > 3 and num_d >= 3 and current_station in Z_4:
+                        dic_indic['v3_not_sent_from_s3'] += 1
                     
                     if list_v:
                         mandatory, team_max = get_mandatory_max(list_v[0])
@@ -479,13 +480,9 @@ if __name__ == "__main__":
                                                             all_roles_found, vehicle_found, dic_vehicles, dic_indic, \
                                                             skill_lvl, station_lvl)
 
-                                            # REWARD
+                                            dic_indic_old = dic_indic.copy() 
+                                            action_num += 1 # for metrics
 
-                                            reward = compute_reward(dic_indic, dic_indic_old, num_d, dic_tarif)
-                                            dic_indic_old = dic_indic.copy()                                            
-                                            score += reward
-                                            action_num += 1
-                                            reward_evo.append([action_num, reward])
 
                                 # else: # si aucun véhicule n'a la fonction requise
                                 #     print(num_inter, veh_depart, vehicle_to_find, "no vehicule found")
@@ -494,18 +491,15 @@ if __name__ == "__main__":
         old_date = date        
                                     
         if num_inter % 100 == 0 and required_departure == {0:"RETURN"}:
-            rwd_mean = np.mean([row[1] for row in reward_evo[-100:]])
-            lr = agent.optimizer.param_groups[0]['lr']
             
-            print(f"{num_inter} v_out: {vehicle_out} rwd_mean: {rwd_mean:.2f} per ff: {score/dic_indic['ff_sent']:.2f} act: {action_num} per act.: {(score/action_num):.5f} v_not_found_ls: {dic_indic['v_not_found_in_last_station']} deg: {dic_indic['v_degraded']}", flush=True)
+            print(f"{num_inter} | v_out: {vehicle_out} | act: {action_num} | v1notfroms1: {dic_indic['v1_not_sent_from_s1']} | v3notfroms3: {dic_indic['v3_not_sent_from_s3']} | v_not_found_ls: {dic_indic['v_not_found_in_last_station']} | deg: {dic_indic['v_degraded']}", flush=True)
             print(f"{num_inter} z1_VSAV_sent: {dic_indic['z1_VSAV_sent']} | z1_FPT_sent: {dic_indic['z1_FPT_sent']} | z1_EPA_sent: {dic_indic['z1_EPA_sent']} | VSAV_disp: {VSAV_disp} | FPT_disp: {FPT_disp} | EPA_disp: {EPA_disp} |", flush=True)
 
     print("Simulation done")
 
     os.chdir('../Plots')
 
-    np.save(args.save_metrics_as + "_vehicle_" + args.dataset[6:10] +".npy", vehicle_evo)
-    np.save(args.save_metrics_as + "_reward_" + args.dataset[6:10] +".npy", reward_evo)
+    # np.save(args.save_metrics_as + "_vehicle_" + args.dataset[6:10] +".npy", vehicle_evo)
 
     pickle.dump(dic_indic, open(args.save_metrics_as + ".pkl", "wb"))
 

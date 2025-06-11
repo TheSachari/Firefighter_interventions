@@ -95,14 +95,11 @@ def get_neighborhood_availability(pdd, station, num_d, dic_vehicles, planning, m
         info_avail = [0] * n_following * 2
     return info_avail
 
-def load_environment_variables(reward_weights, constraint_factor_veh, constraint_factor_ff, dataset, start, end):
+def load_environment_variables(constraint_factor_veh, constraint_factor_ff, dataset, start, end):
 
-    os.chdir('./Reward_weights')
+    os.chdir('./Data_environment')
 
-    dic_tarif = json.load(open(reward_weights))
-    print("Reward weights", dic_tarif)
-
-    os.chdir('../Data_environment')
+    df_stations = pd.read_pickle("df_stations.pkl")
 
     df_v = pd.read_pickle("df_v.pkl")
     dic_vehicles, dic_functions = create_dic_vehicles(df_v)
@@ -139,9 +136,10 @@ def load_environment_variables(reward_weights, constraint_factor_veh, constraint
                     'v_sent': 0,
                     'v_sent_full':0,
                     'v_degraded':0,
-                    'cancelled':0, #cancel departure
+                    'rupture_ff':0, #lack of ff
                     'function_not_found':0,
-                    'v1_not_sent_from_1st_station':0,
+                    'v1_not_sent_from_s1':0,
+                    'v3_not_sent_from_s3':0,
                     'v_not_found_in_last_station':0,
                     'ff_required':0,
                     'ff_sent':0,
@@ -160,9 +158,11 @@ def load_environment_variables(reward_weights, constraint_factor_veh, constraint
     Z_1 = ['TOULOUSE - LOUGNON', 'TOULOUSE - VION']
     Z_2 = ['ST JORY', 'ROUFFIAC', 'RAMONVILLE - BUCHENS', 'COLOMIERS', 'MURET - MASSAT']
     Z_3 = ['AUTERIVE', 'ST LYS', 'GRENADE', 'FRONTON', 'VERFEIL', 'CARAMAN']
+    Z_4 = [s for s in df_stations["Nom"] if s not in Z_1 + Z_2 + Z_3]
+    print("Z_4", Z_4)
     dic_lent = {k:{} for k in Z_1} # station to, v_mat, ff_mat
 
-    df_stations = pd.read_pickle("df_stations.pkl")
+    
     dic_station_distance = {ville_z1: trier_villes_par_distance(df_stations, ville_z1, Z_2 + Z_3) for ville_z1 in Z_1}
 
     idx_start = df_pc[(df_pc["num_inter"]==start) & (df_pc["departure"]!={0: 'RETURN'})].index[0]
@@ -175,8 +175,8 @@ def load_environment_variables(reward_weights, constraint_factor_veh, constraint
     date_reference = df_pc.iloc[0, 1]
     skills_updated = update_skills(df_skills, date_reference)
 
-    return dic_tarif, dic_vehicles, dic_functions, df_skills, dic_roles_skills, dic_roles, planning, \
-    dic_inter, dic_ff, dic_indic, dic_indic_old, Z_1, dic_lent, dic_station_distance, df_pc, \
+    return dic_vehicles, dic_functions, df_skills, dic_roles_skills, dic_roles, planning, \
+    dic_inter, dic_ff, dic_indic, dic_indic_old, Z_1, Z_4, dic_lent, dic_station_distance, df_pc, \
     old_date, date_reference, skills_updated
 
 
@@ -193,7 +193,7 @@ def gen_state(veh_depart, idx_role, ff_array, ff_existing, dic_roles, dic_roles_
     # if state.shape[0] > action_size:
     #     print(state.shape[0])
         
-    filler = np.zeros((action_size-state.shape[0], state.shape[1])) # max 64 de base + 6 ff lent + 1 role to fill
+    filler = np.zeros((action_size-state.shape[0], state.shape[1])) # max 74 de base + 6 ff lent + 1 role to fill
     state = np.vstack((state, filler))
 
     # filler col
@@ -247,50 +247,27 @@ def get_start_hour(df, num_inter):
 
     return date.month, date.day, date.hour
 
-# def reduce_dic(dic_indic):
-#     dic_sum = defaultdict(int)
-#     dic_sum['ff_skill_lvl'] = []
-    
-#     for dic in dic_indic.values():
-#         for v, qty in dic.items():
-#             if v == 'ff_skill_lvl':
-    
-#                 for v_mat, skill_lvl in qty.items():
-#                     dic_sum[v] += skill_lvl
-#             else:
-#                 dic_sum[v] += qty
-    
-#     dic_sum['ff_skill_lvl'] = np.mean(dic_sum['ff_skill_lvl'])
-
-#     return dic_sum
-
 def compute_reward(dic_indic, dic_indic_old, num_d, dic_tarif):
     reward = 0
 
     if num_d < 79:
-        # dic_reward = {key:(dic_indic[key] - dic_indic_old[key]) for key in dic_indic if key != "ff_skill_lvl"}
-        # dic_delta = {key:(dic_indic[key] - dic_indic_old[key]) for key in dic_indic}
 
-        # for k in dic_tarif.keys():
+        dic_delta = {key:(dic_indic[key] - dic_indic_old[key]) for key in dic_indic if key not in ['VSAV_disp', 'FPT_disp', 'EPA_disp']}
 
-            # if k == "skill_lvl" and dic_delta[k] != 0:
-            #     reward += dic_tarif[k] / dic_delta[k]
+        for m in dic_delta:
 
-            # if k == "VSAV_disp":
+            reward += dic_delta[m] * dic_tarif[m]
+
+        
         if dic_indic['VSAV_disp'] < 2:
-            reward -= dic_tarif['VSAV_disp']
+            reward += dic_tarif['VSAV_disp']
     
-    # elif k == "FPT_disp":
         if dic_indic['FPT_disp'] < 2:
-            reward -= dic_tarif['FPT_disp']
+            reward += dic_tarif['FPT_disp']
     
-    # elif k == "EPA_disp":
         if dic_indic['EPA_disp'] < 1:
-            reward -= dic_tarif['EPA_disp']
+            reward += dic_tarif['EPA_disp']
 
-
-            # else:
-            #     reward += dic_delta[k] * dic_tarif[k]
 
     return reward
 
@@ -311,7 +288,6 @@ def step(action, idx_role, ff_existing, all_ff_waiting, current_station, Z_1, di
             dic_ff[ff_mat] = -2 # was already in standby -1
 
         else:
-            stock_duration = dic_ff[ff_mat]
             dic_ff[ff_mat] = -1
 
             if not (VSAV_lent or FPT_lent or EPA_lent or (current_station in Z_1)):
@@ -336,7 +312,7 @@ def step(action, idx_role, ff_existing, all_ff_waiting, current_station, Z_1, di
             dic_ff = cancel_departure(all_roles_found, vehicle_found, planning, current_station, \
                                       month, day, hour, dic_vehicles, dic_ff, v_mat)  
             idx_role += team_max - (num_role -1) # le num_role est itéré une fois de plus au-delà du max
-            dic_indic['cancelled'] += 1
+            dic_indic['rupture_ff'] += 1
             # dic_indic['ff_skill_lvl'][v_mat] = []
 
     return dic_indic, dic_lent, all_roles_found, vehicle_found, planning, dic_vehicles, dic_ff, idx_role, degraded

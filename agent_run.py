@@ -60,19 +60,25 @@ if __name__ == "__main__":
         print("Train mode", flush=True)
 
     else:
+        eps = 0
         os.chdir('../SVG_model')
         agent.qnetwork_local.load_state_dict(torch.load(args.model_name, weights_only=True))
         agent.qnetwork_local.eval()
         
         print("Eval mode - weights loaded", flush=True)  
 
+    os.chdir('../Reward_weights')
+
+    dic_tarif = json.load(open(args.reward_weights))
+    print("Reward weights", dic_tarif)
+
     os.chdir('../')
 
     ### LOAD ENVIRONMENT VARIABLES ###
 
-    dic_tarif, dic_vehicles, dic_functions, df_skills, dic_roles_skills, dic_roles, planning, dic_inter, \
-    dic_ff, dic_indic, dic_indic_old, Z_1, dic_lent, dic_station_distance, df_pc, old_date, date_reference, \
-    skills_updated = load_environment_variables(args.reward_weights, args.constraint_factor_veh, args.constraint_factor_ff, \
+    dic_vehicles, dic_functions, df_skills, dic_roles_skills, dic_roles, planning, dic_inter, \
+    dic_ff, dic_indic, dic_indic_old, Z_1, Z_4, dic_lent, dic_station_distance, df_pc, old_date, date_reference, \
+    skills_updated = load_environment_variables(args.constraint_factor_veh, args.constraint_factor_ff, \
                                                 args.dataset, args.start, args.end)
     
     vehicle_out, num_d, score, action_num = 0, 42, 0, 0
@@ -89,9 +95,9 @@ if __name__ == "__main__":
     EPA_sent, EPA_lent, EPA_needed, EPA_to_return, EPA_returning = (False,) * 5
     VSAV_disp, FPT_disp, EPA_disp = (0,)*3
 
-    eps_update = (args.end-args.start) // 21 # approx. 21 iterations to reach 10% of original lr
+    eps_update = (args.end-args.start) // 23 # approx. 23 iterations to reach 5% of original eps
     d = 1
-    print("eps_start", args.eps_start, "eps_update", eps_update, flush=True)
+    print("eps_start", eps, "eps_update", eps_update, flush=True)
 
     max_duration = df_pc["Duration"].max()
     action_size = hyper_params["action_size"] # idx role + rl infos
@@ -187,8 +193,10 @@ if __name__ == "__main__":
                     num_d, list_v = next(required_vehicles, (0, [])) # On cherche les véhicules requis dans le train initial
                     # print("start", "num_d", num_d, "list_v", list_v)
                     if station_lvl > 1 and num_d == 1:
-                        dic_indic['v1_not_sent_from_1st_station'] += 1
+                        dic_indic['v1_not_sent_from_s1'] += 1
                         # print("v1_not_sent_from_1st_station", station_lvl)
+                    if station_lvl > 3 and num_d >= 3 and current_station in Z_4:
+                        dic_indic['v3_not_sent_from_s3'] += 1
                     
                     if list_v:
                         mandatory, team_max = get_mandatory_max(list_v[0])
@@ -550,8 +558,8 @@ if __name__ == "__main__":
             rwd_mean = np.mean([row[1] for row in reward_evo[-100:]])
             lr = agent.optimizer.param_groups[0]['lr']
             
-            print(f"{num_inter} v_out: {vehicle_out} rwd_mean: {rwd_mean:.2f} per ff: {score/dic_indic['ff_sent']:.2f} act: {action_num} per act.: {(score/action_num):.5f} v_not_found_ls: {dic_indic['v_not_found_in_last_station']} deg: {dic_indic['v_degraded']}", flush=True)
-            print(f"{num_inter} z1_VSAV_sent: {dic_indic['z1_VSAV_sent']} | z1_FPT_sent: {dic_indic['z1_FPT_sent']} | z1_EPA_sent: {dic_indic['z1_EPA_sent']} | VSAV_disp: {VSAV_disp} | FPT_disp: {FPT_disp} | EPA_disp: {EPA_disp} | eps: {eps:.2f} lr: {lr:.5f}", flush=True)
+            print(f"{num_inter} v_out: {vehicle_out} | rwd_mean: {rwd_mean:.2f} | v1notfroms1: {dic_indic['v1_not_sent_from_s1']} | v3notfroms3: {dic_indic['v3_not_sent_from_s3']} | v_not_found_ls: {dic_indic['v_not_found_in_last_station']} | deg: {dic_indic['v_degraded']}", flush=True)
+            print(f"{num_inter} z1_VSAV_sent: {dic_indic['z1_VSAV_sent']} | z1_FPT_sent: {dic_indic['z1_FPT_sent']} | z1_EPA_sent: {dic_indic['z1_EPA_sent']} | VSAV_disp: {VSAV_disp} | FPT_disp: {FPT_disp} | EPA_disp: {EPA_disp} |", flush=True)
 
             dic_delta = {key:(dic_indic[key] - dic_indic_100[key]) for key in dic_indic}
 
@@ -563,9 +571,12 @@ if __name__ == "__main__":
                        "v_sent_full": dic_delta['v_sent_full'],
                        "v_degraded": dic_delta['v_degraded'],
                        "function_not_found": dic_delta['function_not_found'],
+                       "rupture_ff": dic_delta['rupture_ff'],
                        "ff_sent": dic_delta['ff_sent'],   
-                       "skill_lvl": dic_delta['skill_lvl']/action_num, 
+                       "skill_lvl": dic_delta['skill_lvl'], 
                        "v_not_found_ls": dic_delta['v_not_found_in_last_station'],
+                       "v1_not_from_s1": dic_delta['v1_not_sent_from_s1'],
+                       "v3_not_from_s3": dic_delta['v3_not_sent_from_s3'],
                        "z1_VSAV_sent": dic_delta['z1_VSAV_sent'],
                        "z1_FPT_sent": dic_delta['z1_FPT_sent'],
                        "z1_EPA_sent": dic_delta['z1_EPA_sent'],
@@ -605,7 +616,7 @@ if __name__ == "__main__":
 
         os.chdir('../Plots')
         
-        np.save(args.save_metrics_as + "_vehicle_" + args.dataset[6:10] +".npy", vehicle_evo)
+        # np.save(args.save_metrics_as + "_vehicle_" + args.dataset[6:10] +".npy", vehicle_evo)
         np.save(args.save_metrics_as + "_reward_" + args.dataset[6:10] +".npy", reward_evo)    
         pickle.dump(dic_indic, open(args.save_metrics_as + ".pkl", "wb"))
     
