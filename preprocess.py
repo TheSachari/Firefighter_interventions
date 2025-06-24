@@ -4,6 +4,14 @@ import geopandas as gpd
 from shapely import MultiPolygon, unary_union, Point
 from pickle import dump, load
 import os
+import re
+
+def replace_vl_prefix(lst):
+    return [re.sub(r'^VL\s+', 'VL', item) for item in lst]
+
+
+def replace_in_list(lst, dic):
+    return [dic.get(item, item) for item in lst]
 
 def get_point_in_area(point, zones):
     res = zones["sector"][zones.contains(point)].values
@@ -123,15 +131,31 @@ def preprocess(gdf_secteurs, df_sorties, df_inter, df_materiel):
     df_inter = df_inter[df_inter['num_inter'].isin(df_func.num_inter)].reset_index(drop=True)
     
     df_inter["real_func"] = df_func["function"].copy()
-    li = ['VL OFF RT','CEPRO','CCI','BLR','DA','VL CODIS M','FPT SD','CESD','EPS','VL MOY PC',\
-          'VL RENS PC','MPR','CDHR','EPA DEGRAD','CEIN','XCOMPL','MPRG','VL CODIS C','CDEHR',\
+
+    df_inter["real_func"] = df_inter["real_func"].apply(replace_vl_prefix)
+
+    dic_replace = {'CCI':"CCFM",
+               'BLR':"BMS",
+               'FPT SD':"FPT",
+               'EPS':"EPC18",
+               'EPA DEGRAD':"EPC18",
+               'XCOMPL':"COMPL",
+               'RIMP':"VGRIMP",
+               'EMB':"BLS",
+               'GRIMP':"VGRIMP",
+               "VLOG":"VLA",
+               'VPL':"VSN",
+               'CCF DEGRAD':"CCFM"
+              }
+    
+    df_inter["real_func"] = df_inter["real_func"].apply(lambda lst: replace_in_list(lst, dic_replace))
+
+    li = ['VL OFF RT','CEPRO',"DA", "CEAEGC", 'CCI','BLR','DA','VL CODIS M','FPT SD','CESD','EPS','VL MOY PC',\
+          'VL RENS PC','MPR','CDHR','EPA DEGRAD','CEIN','XCOMPL','MPRG','VL CODIS C','CDHR', 'CDEHR',\
           'PT TRANSIT','RIMP','EMB','CAMPLATEAU','GRIMP','CESDMF','CEPOL','CAMERA','RPO',\
-          'VL MECANIQ','VL MCHEF','CESAP','VPL','VLOG','VSAT','CCF DEGRAD']
+          'VL MECANIQ', 'VLMECANIQ', 'VL MCHEF','CESAP','VPL','VLOG','VSAT','CCF DEGRAD']
     df_inter["real_func"] = df_inter["real_func"].apply(lambda lst: [item for item in lst if item not in li])
 
-    
-    # dic_replace = {"XCOMPL":"COMPL", "CCF DEGRAD":"CCF"}
-    # df_inter["real_func"] = df_inter["real_func"].replace(dic_replace)
 
     df_prob_dep = df_inter[["num_inter", "real_func"]].copy()
     df_inter = df_inter[["Coord X", "Coord Y", "Month", "Day", "Hour", "Minute", "Duration", "Incident"]]

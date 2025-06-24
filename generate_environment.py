@@ -71,36 +71,6 @@ def get_number_v(status):
     ss = dic_vehicles.keys()
     return sum(len(dic_vehicles[s][status]) for s in ss)
 
-def get_skills_from_role(df_roles, role):
-    return df_roles[(df_roles["Fonction"] == role)]["Competences"].reset_index(drop=True).values
-
-
-def get_ff_compatible(df, station, ff_available, date, plus, minus):
-
-    df_filtered = df.loc[ff_available, :]    
-    mask_all_competences = pd.concat([(df_filtered[(comp, "Début")] <= date) & (df_filtered[(comp, "Fin")] >= date)
-        for comp in plus], axis=1).all(axis=1)
-    
-    if len(df_filtered[mask_all_competences]) == 0:
-        return []
-
-    else:
-        ff_plus = df_filtered[mask_all_competences].index.tolist()
-        df_filtered_2 = df.loc[ff_plus, :]
-        mask_nan_debut = df_filtered_2[[(comp, 'Début') for comp in minus]].isna()
-        if len(df_filtered_2[mask_nan_debut.all(axis=1)]) == 0:
-            return []
-        else:            
-            return df_filtered_2[mask_nan_debut.all(axis=1)].index.tolist()
-
-# def get_potential_ginc(Z_1, dic_vehicles, dic_functions):
-
-#     # 2 FPT + 1 EPC en Z1
-#     fpt_disp = len([item for s in Z_1 for item in dic_vehicles[s]["available"] if any("FPT" in func for func in dic_functions[item])])
-#     ep_disp = len([item for s in Z_1 for item in dic_vehicles[s]["available"] if any("EP" in func for func in dic_functions[item])])
-
-#     return fpt_disp, ep_disp
-
 def get_stations(x, y, df_pdd, stations_u):
     point = Point([x, y])
     pdd = df_pdd.loc[:, df_pdd.columns.str.startswith('cis')].iloc[np.where(df_pdd.geometry.contains(point))].values[0]
@@ -317,7 +287,24 @@ def precompute_returns(df_sample, start_inter, end_inter, is_fake):
 
 def create_responses(df_responses, df_rank_incident):
 
-    dic_replace = {"CCF DEGRAD":"CCF", "XCOMPL":"COMPL", "VPL":"VSN", "EMB":"VEMB", "CEIN":"VSAV"}
+    dic_replace = {"CCF DEGRAD":"CCF", 
+                   "XCOMPL":"COMPL", 
+                   "VPL":"VSN", 
+                   "EMB":"VEMB", 
+                   "CEIN":"VSAV", 
+                   'EPA DEGRAD':"EPC18",
+                   'VL[X-GPT OPERATION]':'VL', 
+                   'VSN[TOULOUSE - LOUGNON]':'VSN',  
+                   'VFT[ST GAUDENS]':"VFT", 
+                   'VSR[COLOMIERS]':"VSR", 
+                   'VL[X-CTA CODIS]':"VL",
+                   "CESDMF":"CESD",
+                    'FPT   MPR':"FPT",
+                    'VLHR[Z CRS LUCHON]':"VLHR",
+                    'VPL':"VSN",
+                   'PSECINC    MPR':"PSECINC",
+                    'PSECINC2    MPR':"PSECINC2"
+                  }
     df_responses["Materiel"] = df_responses["Materiel"].replace(dic_replace)
     df_responses = df_responses.dropna(subset=['Materiel']).reset_index(drop=True)
     dict_result = df_rank_incident.set_index('rank')['sin'].to_dict()

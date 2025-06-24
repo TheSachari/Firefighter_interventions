@@ -106,7 +106,7 @@ if __name__ == "__main__":
                 veh_depart = veh_depart[:5]  
                 required_departure = {i + 1: [v] for i, v in enumerate(veh_depart)}
                 following_depart = True
-                # print("following_depart")
+                print("following_depart", veh_depart)
 
             new_required_departure = {}
             stations = iter(pdd)            
@@ -137,7 +137,7 @@ if __name__ == "__main__":
                     departure_done = False
                     required_vehicles = iter(sorted(required_departure.items()))
 
-                # print(num_inter, required_departure)
+                print(num_inter, veh_depart)
         
                 while not departure_done: # Tant que tous les véhicules n'ont pas été envoyés
                     
@@ -172,6 +172,14 @@ if __name__ == "__main__":
                                 required_departure = {i + 1: [v] for i, v in enumerate(new_veh_depart)}
                                 required_departure = update_dep(required_departure)
                                 veh_depart = new_veh_depart
+
+                                if len(veh_depart) > 5:
+                                    new_veh_depart = veh_depart[5:].copy()
+                                    veh_depart = veh_depart[:5]  
+                                    required_departure = {i + 1: [v] for i, v in enumerate(veh_depart)}
+                                    following_depart = True
+                                    print("following_depart", veh_depart)
+                                
                                 new_required_departure = {}
                                 idx_role, num_d = 0, 1
                                 following_depart = False
@@ -241,7 +249,7 @@ if __name__ == "__main__":
                                     if num_d < 99:
                                         veh_depart[num_d-1] = vehicle_to_find
 
-                                    # print(num_inter, "veh_depart", veh_depart, "num_d", num_d, vehicle_to_find, v_mat, "found in", current_station)
+                                    print(num_inter, "veh_depart", veh_depart, "num_d", num_d, vehicle_to_find, v_mat, "found in", current_station)
     
                                     mandatory, team_max = get_mandatory_max(vehicle_to_find)
                                     

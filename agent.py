@@ -138,7 +138,7 @@ class DQN_Agent():
         else:
             return None
             
-    def act(self, state, all_ff_waiting, eps=0., eval=False):
+    def act(self, state, all_ff_waiting, eps=0.):
 
         potential_actions, potential_skills = get_potential_actions(state, all_ff_waiting)
         
@@ -424,7 +424,7 @@ class FQF_Agent():
             return None
 
                 
-    def act(self, state, all_ff_waiting, eps=0., eval=False):
+    def act(self, state, all_ff_waiting, eps=0.):
 
         potential_actions, potential_skills = get_potential_actions(state, all_ff_waiting)
               
@@ -774,97 +774,160 @@ def filter_q_values(q_list, potential_actions):
         return max(dic_q, key=dic_q.get) # action with the highest q value
     else:
         return 99
-    
-# def get_potential_actions(state, all_ff_waiting):
 
-#     # 1st row: rl infos
-#     # 2nd row: idx role
 
-#     potential_actions = [99]
-#     skill_lvl = 0
-#     potential_skills = [0]
-#     # state = state.cpu().numpy()
-#     col_index = np.argmax(state[1, :] == 1) # role actuel
-#     column_values = state[2:, col_index] # ff available for a given role
-#     selection = column_values[column_values > 0] # ff having the skill
-#     if selection.size > 0: # any ff ?
-#         if not all_ff_waiting:
-#             cond_met = np.where( (column_values > 0) & (state[2:, -1] == 0) )[0] # ff having any skill lvl > 0
-#             potential_skills = column_values[(column_values > 0) & (state[2:, -1] == 0)].tolist()
-#         else: # all ff waiting
-#             skill_lvl = np.min(selection)
-#             cond_met = np.where( (column_values >= skill_lvl) & (state[2:, -1] == -1) )[0] # ff having the best skill lvl
-#             cond_met = np.array([cond_met[0]]) # first ff because all ff waiting follows an order
-#             potential_skills = [skill_lvl]
-            
-#         if cond_met.size > 0:
-#             potential_actions = cond_met.tolist()
+### PPO
+
+class PPO_Agent():
+
+def __init__(self,
+                 state_size,
+                 action_size,
+                 layer_type,
+                 layer_size,
+                 num_layers,
+                 use_batchnorm,
+                 n_steps,
+                 batch_size,
+                 buffer_size,
+                 lr,
+                 lr_dec,
+                 tau,
+                 gamma,
+                 munchausen,
+                 curiosity,
+                 curiosity_size,
+                 per,
+                 rdm,
+                 entropy_tau,
+                 entropy_tau_coeff,
+                 lo,
+                 alpha ,
+                 N,
+                 entropy_coeff,
+                 update_every,
+                 max_train_steps,
+                 decay_update,
+                 clip_epsilon, 
+                 ppo_epochs, 
+                 device,
+                 seed):
+
+        self.state_size = state_size
+        self.action_size = action_size
+        self.layer_type = layer_type
+        self.layer_size = layer_size
+        self.num_layers = num_layers
+        self.use_batchnorm = use_batchnorm
+        self.seed = seed
+        self.tseed = torch.manual_seed(seed)
+        self.device = device
+        self.tau = tau
+        self.gamma = gamma
+        self.update_every = update_every
+        self.t_step = 0
+        self.batch_size = batch_size
+        self.Q_updates = 1 # to match with decay update
+        self.n_steps = n_steps
+        self.entropy_coeff = entropy_coeff
+        self.N = N
+        self.lr = lr
+        self.lr_dec = lr_dec
+        self.per = per
+        self.rdm = rdm
+        # munchausen params
+        self.munchausen = munchausen
+        self.curiosity = curiosity
+        self.curiosity_size = curiosity_size
+        self.eta = .1
+        self.entropy_tau = entropy_tau
+        self.entropy_tau_coeff = entropy_tau_coeff
+        self.lo = lo
+        self.alpha = alpha   
+        self.max_train_steps = max_train_steps # 80k for 10k resp, for lr decay
+        self.decay_update =  decay_update # Q updates % decay update => lr decay
+        print("lr decay:", self.lr_dec, "decay_update:", self.decay_update, "PER", self.per)
+        self.grad_clip = 1 #1, 10 ?
+
+        self.clip_epsilon = clip_epsilon
+        self.ppo_epochs = ppo_epochs
+
+
+        # Networks
+        self.policy = PolicyNet(state_size, layer_size, action_size).to(device)
+        self.value = ValueNet(state_size, layer_size).to(device)
+
+        self.optimizer = optim.Adam(
+            list(self.policy.parameters()) + list(self.value.parameters()), 
+            lr=self.lr
+        )
+
+    def act(self, state, all_ff_waiting, eps=0.):
         
-#     return potential_actions, potential_skills
-
-# def get_potential_actions(state, all_ff_waiting):
-
-#     # 1st row: rl infos
-#     # 2nd row: idx role
-
-#     potential_actions = [99]
-#     skill_lvl = 0
-#     potential_skills = [0]
-#     # state = state.cpu().numpy()
-#     col_index = np.argmax(state[1, :] == 1) # role actuel
-#     column_values = state[2:, col_index] # ff available for a given role
-#     selection = column_values[column_values > 0] # ff having the skill
-#     if selection.size > 0: # any ff ?
-#         if not all_ff_waiting: # standard case
-#             cond_met = np.where( (column_values > 0) & (np.all(state[2:, -3:] == 0, axis=1)) )[0] # ff having any skill lvl > 0
-#             potential_skills = column_values[(column_values > 0) & (np.all(state[2:, -3:] == 0, axis=1))].tolist()
-#         else: # all ff waiting
-#             skill_lvl = np.min(selection)
-#             cond_met = np.where( (column_values >= skill_lvl) & (state[2:, -2] == 1) )[0] # ff having the best skill lvl
-#             cond_met = np.array([cond_met[0]]) # first ff because all ff waiting follows an order
-#             potential_skills = [skill_lvl]
-            
-#         if cond_met.size > 0:
-#             potential_actions = cond_met.tolist()
-#         else:
-#             potential_skills = [0]
+        potential_actions, potential_skills = get_potential_actions(state, all_ff_waiting)
         
-#     return potential_actions, potential_skills
+        state = torch.from_numpy(state.flatten()).float().to(self.device)
+        logits = self.policy(state)
+        probs = torch.softmax(logits, dim=-1)
+        dist = torch.distributions.Categorical(probs)
+        action = dist.sample()
+        return action.item(), dist.log_prob(action), dist.entropy()
 
-# def get_potential_actions(state, all_ff_waiting):
 
-#     # 1st row: rl infos
-#     # 2nd row: idx role
 
-#     potential_actions = [99]
-#     skill_lvl = 0
-#     potential_skills = [0]
-#     # state = state.cpu().numpy()
-#     col_index = np.argmax(state[1, :] == 1) # role actuel
-#     column_values = state[2:, col_index] # ff available for a given role
-#     selection = column_values[column_values > 0] # ff having the skill
-#     if selection.size > 0: # any ff ?
-#         if not all_ff_waiting: # standard case
-#             cond_met = np.where( (column_values > 0) & (np.all(state[2:, -3:] == 0, axis=1)) )[0] # ff having any skill lvl > 0
-#             # print("cond_met.size", cond_met.size)
-#             potential_skills = column_values[(column_values > 0) & (np.all(state[2:, -3:] == 0, axis=1))].tolist()
-#             # print("potential_skills", potential_skills)
-#             # subset = state[1:16, np.r_[0:5, -3:0]]
-#             # print("Shape:", subset.shape)
-#             # print(subset)
-#         else: # all ff waiting
-#             skill_lvl = np.min(selection)
-#             cond_met = np.where( (column_values >= skill_lvl) & (state[2:, -2] == 1) )[0] # ff having the best skill lvl
-#             cond_met = np.array([cond_met[0]]) # first ff because all ff waiting follows an order
-#             potential_skills = [skill_lvl]
-#             # print("skill_lvl1", skill_lvl)
             
-#         if cond_met.size > 0:
-#             potential_actions = cond_met.tolist()
-#         else:
-#             potential_skills = [0]
+            state = torch.from_numpy(state.flatten()).float().to(self.device)
+            self.qnetwork_local.eval()
+            with torch.no_grad():
+                q = self.qnetwork_local(state)                
+            self.qnetwork_local.train()
+            
+            q_list = q.cpu().numpy().flatten().tolist()  
+            action = filter_q_values(q_list, potential_actions)
 
-#     # print("skill_lvl2", skill_lvl, potential_skills)
-        
-#     return potential_actions, potential_skills
+        else:
+            action = random.choice(potential_actions)
+
+        skill_lvl = potential_skills[potential_actions.index(action)]
+
+        return action, skill_lvl
+
+    def compute_advantage(self, rewards, values, masks):
+        returns = []
+        R = 0
+        for r, m in zip(reversed(rewards), reversed(masks)):
+            R = r + self.gamma * R * m
+            returns.insert(0, R)
+        returns = torch.tensor(returns, dtype=torch.float32, device=self.device)
+        advantages = returns - values
+        return returns, advantages
+
+    def update(self, trajectories):
+        states, actions, old_log_probs, rewards, masks = zip(*trajectories)
+        states = torch.tensor(states, dtype=torch.float32, device=self.device)
+        actions = torch.tensor(actions, device=self.device)
+        old_log_probs = torch.tensor(old_log_probs, dtype=torch.float32, device=self.device)
+        values = self.value(states).detach()
+
+        returns, advantages = self.compute_advantage(rewards, values, masks)
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        for _ in range(self.ppo_epochs):
+            logits = self.policy(states)
+            probs = torch.softmax(logits, dim=-1)
+            dist = torch.distributions.Categorical(probs)
+
+            new_log_probs = dist.log_prob(actions)
+            ratio = torch.exp(new_log_probs - old_log_probs)
+
+            clipped_ratio = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon)
+            policy_loss = -torch.min(ratio * advantages, clipped_ratio * advantages).mean()
+
+            value_loss = nn.MSELoss()(self.value(states), returns)
+            loss = policy_loss + 0.5 * value_loss
+
+            self.optimizer.zero_grad()
+            loss.backward()
+            self.optimizer.step()
+
 

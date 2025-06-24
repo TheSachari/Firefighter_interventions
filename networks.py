@@ -65,7 +65,7 @@ class NoisyLinear(nn.Linear):
     
 class Dueling_QNetwork(nn.Module):
 
-    def __init__(self, state_size, action_size,layer_size, n_step, seed, num_layers = 8, layer_type="ff", use_batchnorm=True):
+    def __init__(self, state_size, action_size, layer_size, n_step, seed, num_layers = 8, layer_type="ff", use_batchnorm=True):
 
         super(Dueling_QNetwork, self).__init__()
         self.seed = torch.manual_seed(seed)
@@ -109,6 +109,8 @@ class Dueling_QNetwork(nn.Module):
         
     def forward(self, state):
         # print("state:", state.shape)
+
+        
         
         if state.dim() == 1:
             state = state.unsqueeze(0)
@@ -287,4 +289,67 @@ class FPN(nn.Module):
         assert entropy.shape == (q.shape[0], 1), "instead shape {}".format(entropy.shape)
         
         return taus, taus_, entropy
+
+
+### PPO
+
+class PolicyNet(nn.Module):
+    def __init__(self, state_size, action_size, layer_size, seed, num_layers = 8, use_batchnorm=True):
+
+        super().__init__()
+        self.seed = torch.manual_seed(seed)
+        self.action_size = action_size
+        self.num_layers = num_layers
+        self.layer_type = layer_type
+        self.use_batchnorm = use_batchnorm
+
+        layers = []
+
+        layers.append(nn.Linear(state_size, layer_size))
+        if use_batchnorm:
+            layers.append(nn.BatchNorm1d(layer_size))
+        layers.append(nn.ReLU())
+
+        for _ in range(num_layers - 2):
+            layers.append(nn.Linear(layer_size, layer_size))
+            if use_batchnorm:
+                layers.append(nn.BatchNorm1d(layer_size))
+            layers.append(nn.ReLU())
+
+        layers.append(nn.Linear(layer_size, action_size))
+
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.model(x)
+
+class ValueNet(nn.Module):
+    def __init__(self, state_size, layer_size, seed, num_layers = 8, use_batchnorm=True):
+
+        super().__init__()
+        self.seed = torch.manual_seed(seed)
+        self.action_size = action_size
+        self.num_layers = num_layers
+        self.layer_type = layer_type
+        self.use_batchnorm = use_batchnorm
+
+        layers = []
+
+        layers.append(nn.Linear(state_size, layer_size))
+        if use_batchnorm:
+            layers.append(nn.BatchNorm1d(layer_size))
+        layers.append(nn.ReLU())
+
+        for _ in range(num_layers - 2):
+            layers.append(nn.Linear(layer_size, layer_size))
+            if use_batchnorm:
+                layers.append(nn.BatchNorm1d(layer_size))
+            layers.append(nn.ReLU())
+
+        layers.append(nn.Linear(layer_size, 1))
+
+        self.model = nn.Sequential(*layers)
+
+    def forward(self, x):
+        return self.model(x).squeeze(-1)
     
