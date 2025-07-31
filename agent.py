@@ -84,7 +84,9 @@ class DQN_Agent():
 
         self.qnetwork_local = Dueling_QNetwork(state_size, action_size,layer_size, n_steps, seed, num_layers, layer_type, use_batchnorm).to(device)
         self.qnetwork_target = Dueling_QNetwork(state_size, action_size,layer_size, n_steps, seed, num_layers, layer_type, use_batchnorm).to(device)
-           
+
+        # Optimizer
+        
         self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=lr)
 
         if self.lr_dec == 0:
@@ -113,8 +115,8 @@ class DQN_Agent():
             
     def step(self, state, action, reward, next_state, done):
 
-        state = torch.from_numpy(state.flatten()).float()
-        next_state = torch.from_numpy(next_state.flatten()).float()
+        state = torch.from_numpy(state).float()
+        next_state = torch.from_numpy(next_state).float()
         
         # Save experience in replay memory
 
@@ -143,18 +145,23 @@ class DQN_Agent():
         potential_actions, potential_skills = get_potential_actions(state, all_ff_waiting)
         
         if np.random.uniform() > eps:
-            # state = state.view(1, self.state_size).to(self.device)
             
-            state = torch.from_numpy(state.flatten()).float().to(self.device)
+            # state = torch.from_numpy(state.flatten()).float().to(self.device)
+            
             self.qnetwork_local.eval()
             with torch.no_grad():
                 q = self.qnetwork_local(state)                
             self.qnetwork_local.train()
             
-            q_list = q.cpu().numpy().flatten().tolist()  
-            action = filter_q_values(q_list, potential_actions)
+            q_values = q.cpu().numpy().flatten().tolist()  
+
+
+            # masking invalid actions:
+
+            action = filter_q_values(q_values, potential_actions)
 
         else:
+
             action = random.choice(potential_actions)
 
         skill_lvl = potential_skills[potential_actions.index(action)]
@@ -399,8 +406,8 @@ class FQF_Agent():
 
     def step(self, state, action, reward, next_state, done):
         
-        state = torch.from_numpy(state.flatten()).float()
-        next_state = torch.from_numpy(next_state.flatten()).float() 
+        state = torch.from_numpy(state).float()
+        next_state = torch.from_numpy(next_state).float() 
         
         # Save experience in replay memory
 
@@ -767,167 +774,236 @@ def calculate_huber_loss(td_errors, k=1.0):
     return loss
 
 def filter_q_values(q_list, potential_actions):
-    if potential_actions != [99]:
+    if potential_actions != [79]:
 
         dic_q = {k:q_list[k] for k in potential_actions} # dic potential action : q value  
 
         return max(dic_q, key=dic_q.get) # action with the highest q value
     else:
-        return 99
+        return 79
+
+# POMO
+
+# def build_action_mask_batch(batch_valid_actions, action_space_size):
+#     batch_size = len(batch_valid_actions)
+#     mask = torch.full((batch_size, action_space_size), float('-inf'))
+#     for i, valid in enumerate(batch_valid_actions):
+#         mask[i, valid] = 0.0
+#     return mask
 
 
-### PPO
+# class POMO_Agent:
+#     def __init__(self, state_size, action_size, feature_size, batch_size, update_every, layer_size, d_model, n_heads, num_layers, lr, device, use_batchnorm, num_samples, buffer_size, seed):
+#         self.device = device
+#         self.state_size = state_size
+#         self.action_size = action_size
+#         self.feature_size = feature_size
+#         self.buffer_size = buffer_size
+#         self.batch_size = batch_size
+#         self.update_every = update_every
+#         self.num_layers = num_layers
+#         self.layer_size = layer_size
+#         self.use_batchnorm = use_batchnorm
+#         self.d_model = d_model
+#         self.n_heads = n_heads
+#         self.num_samples = num_samples
+#         self.seed = seed
+#         self.t_step = 0
+        
+#         self.pomo_network = POMO_Network(self.state_size, self.action_size, self.feature_size, self.d_model, self.n_heads, self.num_layers, self.layer_size, self.use_batchnorm, self.seed).to(device)
+#         self.optimizer = optim.Adam(self.pomo_network.parameters(), lr=lr)
+#         self.memory = POMO_ReplayBuffer(self.buffer_size, self.batch_size)
+        
 
-class PPO_Agent():
 
-def __init__(self,
-                 state_size,
-                 action_size,
-                 layer_type,
-                 layer_size,
-                 num_layers,
-                 use_batchnorm,
-                 n_steps,
-                 batch_size,
-                 buffer_size,
-                 lr,
-                 lr_dec,
-                 tau,
-                 gamma,
-                 munchausen,
-                 curiosity,
-                 curiosity_size,
-                 per,
-                 rdm,
-                 entropy_tau,
-                 entropy_tau_coeff,
-                 lo,
-                 alpha ,
-                 N,
-                 entropy_coeff,
-                 update_every,
-                 max_train_steps,
-                 decay_update,
-                 clip_epsilon, 
-                 ppo_epochs, 
-                 device,
-                 seed):
+#     def act(self, state, all_ff_waiting):
 
+#         potential_actions, potential_skills = get_potential_actions(state, all_ff_waiting)
+#         state = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(self.device)
+#         mask = torch.full((self.action_size,), float('-inf'))
+#         mask[potential_actions] = 0.0
+    
+#         actions_list = []
+#         skill_levels_list = []
+
+#         if len(potential_actions) == 1:
+#             current_num_samples = 1
+#         else:
+#             current_num_samples = self.num_samples
+    
+#         for _ in range(current_num_samples):
+
+#             self.pomo_network.eval()
+#             with torch.no_grad():
+#                 logits = self.pomo_network(state).squeeze(0)
+#                 masked_logits = logits + mask.to(self.device)
+#                 probs = torch.softmax(masked_logits, dim=-1)
+#                 action = torch.multinomial(probs, num_samples=1).item()
+#             self.pomo_network.train()
+    
+#             actions_list.append(action)
+#             skill_levels_list.append(potential_skills[potential_actions.index(action)])
+    
+#         actions = torch.tensor(actions_list)
+#         skill_levels = torch.tensor(skill_levels_list).float()
+#         masks = mask.unsqueeze(0).repeat(self.num_samples, 1).to(self.device) 
+    
+#         return actions.cpu(), masks, skill_levels
+
+#     def compute_loss(self, states, actions, rewards, masks):
+#         states = states.to(self.device)
+#         actions = actions.to(self.device)
+#         rewards = rewards.to(self.device)
+#         masks = masks.to(self.device)
+
+#         B = states.size(0)
+#         num_samples = actions.size(0) // B
+#         actions = actions.view(B, num_samples)
+#         rewards = rewards.view(B, num_samples)
+#         masks = masks.view(-1, masks.size(-1)) 
+
+#         logits = self.pomo_network(states)
+#         logits = logits + masks
+        
+#         log_probs = torch.log_softmax(logits, dim=1)
+
+#         selected_log_probs = log_probs.gather(1, actions.view(-1, 1).to(self.device)).squeeze(1)
+#         selected_log_probs = selected_log_probs.view(B, num_samples)
+
+#         # baseline = rewards.mean(dim=1, keepdim=True)
+#         # advantages = rewards - baseline # suppression de la baseline pour tester les rewards
+
+#         if rewards.abs().sum() == 0:
+#             loss = -selected_log_probs.mean()
+#         else:
+
+#             baseline = rewards.mean(dim=1, keepdim=True)
+#             advantages = rewards - baseline
+#             loss = -(selected_log_probs * advantages.to(self.device)).mean()
+#         return loss
+    
+#     def learn(self, experiences):
+#         self.optimizer.zero_grad()
+#         states, actions, rewards, masks = experiences
+#         loss = self.compute_loss(states, actions, rewards, masks)
+#         loss.backward()
+#         clip_grad_norm_(self.pomo_network.parameters(), 1.0)
+#         self.optimizer.step()
+#         return loss.item()
+
+#     def step(self, state_batch, action_batch, reward_batch, mask_batch):
+#         for s, a, r, m in zip(state_batch, action_batch, reward_batch, mask_batch):
+#             self.memory.add(s, a, r, m)
+
+#         self.t_step += 1
+        
+#         if (self.t_step) % self.update_every == 0:
+
+#             if len(self.memory) > self.batch_size:
+#                 experiences = self.memory.sample() 
+#                 loss = self.learn(experiences)
+
+#                 return loss
+
+#         else:
+#             return None
+
+### Decision Transformer
+
+class DT_Agent:
+    def __init__(self, state_size, action_size, feature_size, buffer_size, batch_size, update_every, num_layers, lr, layer_size, device, max_len, seed):
+        self.device = device
         self.state_size = state_size
         self.action_size = action_size
-        self.layer_type = layer_type
-        self.layer_size = layer_size
-        self.num_layers = num_layers
-        self.use_batchnorm = use_batchnorm
-        self.seed = seed
-        self.tseed = torch.manual_seed(seed)
-        self.device = device
-        self.tau = tau
-        self.gamma = gamma
-        self.update_every = update_every
-        self.t_step = 0
+        self.feature_size = feature_size
+        self.buffer_size = buffer_size
         self.batch_size = batch_size
-        self.Q_updates = 1 # to match with decay update
-        self.n_steps = n_steps
-        self.entropy_coeff = entropy_coeff
-        self.N = N
-        self.lr = lr
-        self.lr_dec = lr_dec
-        self.per = per
-        self.rdm = rdm
-        # munchausen params
-        self.munchausen = munchausen
-        self.curiosity = curiosity
-        self.curiosity_size = curiosity_size
-        self.eta = .1
-        self.entropy_tau = entropy_tau
-        self.entropy_tau_coeff = entropy_tau_coeff
-        self.lo = lo
-        self.alpha = alpha   
-        self.max_train_steps = max_train_steps # 80k for 10k resp, for lr decay
-        self.decay_update =  decay_update # Q updates % decay update => lr decay
-        print("lr decay:", self.lr_dec, "decay_update:", self.decay_update, "PER", self.per)
-        self.grad_clip = 1 #1, 10 ?
+        self.update_every = update_every
+        self.num_layers = num_layers
+        self.layer_size = layer_size
+        self.max_len = max_len
+        self.device = device
+        self.seed = seed
 
-        self.clip_epsilon = clip_epsilon
-        self.ppo_epochs = ppo_epochs
+        self.dt_network = DT_Network(self.state_size, self.action_size, self.feature_size, self.layer_size, self.num_layers, self.max_len, self.seed).to(device)
+        self.optimizer = optim.Adam(self.dt_network.parameters(), lr=lr)
 
+        self.memory = DT_ReplayBuffer(self.buffer_size, self.batch_size)
 
-        # Networks
-        self.policy = PolicyNet(state_size, layer_size, action_size).to(device)
-        self.value = ValueNet(state_size, layer_size).to(device)
+    def act(self, state, all_ff_waiting, traj_states, traj_actions, traj_returns, traj_timesteps):
 
-        self.optimizer = optim.Adam(
-            list(self.policy.parameters()) + list(self.value.parameters()), 
-            lr=self.lr
-        )
-
-    def act(self, state, all_ff_waiting, eps=0.):
         
         potential_actions, potential_skills = get_potential_actions(state, all_ff_waiting)
-        
-        state = torch.from_numpy(state.flatten()).float().to(self.device)
-        logits = self.policy(state)
-        probs = torch.softmax(logits, dim=-1)
-        dist = torch.distributions.Categorical(probs)
-        action = dist.sample()
-        return action.item(), dist.log_prob(action), dist.entropy()
+
+        # print(f"states={len(traj_states)}, actions={len(traj_actions)}, returns={len(traj_returns)}, timesteps={len(traj_timesteps)}")
 
 
+        if len(traj_states) == 0 or len(traj_actions) == 0 or len(traj_returns) == 0 or len(traj_timesteps) == 0:
 
-            
-            state = torch.from_numpy(state.flatten()).float().to(self.device)
-            self.qnetwork_local.eval()
-            with torch.no_grad():
-                q = self.qnetwork_local(state)                
-            self.qnetwork_local.train()
-            
-            q_list = q.cpu().numpy().flatten().tolist()  
-            action = filter_q_values(q_list, potential_actions)
-
-        else:
             action = random.choice(potential_actions)
+            skill_lvl = potential_skills[potential_actions.index(action)]
+            return action, skill_lvl
+
+        states=torch.stack(traj_states[-self.max_len:]).unsqueeze(0)
+        actions=torch.stack(traj_actions[-self.max_len:]).unsqueeze(0)
+        timesteps=torch.tensor(traj_timesteps[-self.max_len:]).unsqueeze(0)
+        
+        if len(traj_returns) == 0:
+            returns_to_go = torch.zeros(1, 1, 1)  # fallback sécurisé
+            print("fallback")
+        else:
+            returns_to_go = torch.stack(traj_returns[-self.max_len:]).unsqueeze(0)  # [1, T, 1]
+
+
+        self.dt_network.eval()
+        with torch.no_grad():
+            mask = torch.ones(states.shape[:2], dtype=torch.bool).to(self.device)
+            logits = self.dt_network(states.to(self.device), actions.to(self.device), returns_to_go.to(self.device), timesteps.to(self.device), mask)
+            last_logits = logits[:, -1]
+            
+
+            mask_logits = torch.full_like(last_logits, float('-inf'))
+            mask_logits[:, potential_actions] = last_logits[:, potential_actions]
+            
+            probs = F.softmax(mask_logits, dim=-1)
+            action = torch.multinomial(probs, num_samples=1).item()
+        self.dt_network.train()
 
         skill_lvl = potential_skills[potential_actions.index(action)]
 
         return action, skill_lvl
 
-    def compute_advantage(self, rewards, values, masks):
-        returns = []
-        R = 0
-        for r, m in zip(reversed(rewards), reversed(masks)):
-            R = r + self.gamma * R * m
-            returns.insert(0, R)
-        returns = torch.tensor(returns, dtype=torch.float32, device=self.device)
-        advantages = returns - values
-        return returns, advantages
+    def store_trajectory(self, states, actions, returns_to_go, timesteps):
+        self.memory.add((states, actions, returns_to_go, timesteps))
 
-    def update(self, trajectories):
-        states, actions, old_log_probs, rewards, masks = zip(*trajectories)
-        states = torch.tensor(states, dtype=torch.float32, device=self.device)
-        actions = torch.tensor(actions, device=self.device)
-        old_log_probs = torch.tensor(old_log_probs, dtype=torch.float32, device=self.device)
-        values = self.value(states).detach()
 
-        returns, advantages = self.compute_advantage(rewards, values, masks)
-        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+    def learn(self):
 
-        for _ in range(self.ppo_epochs):
-            logits = self.policy(states)
-            probs = torch.softmax(logits, dim=-1)
-            dist = torch.distributions.Categorical(probs)
 
-            new_log_probs = dist.log_prob(actions)
-            ratio = torch.exp(new_log_probs - old_log_probs)
+        if len(self.memory) < self.memory.batch_size:
+            return None
+        
+        states, actions, returns, timesteps, mask = self.memory.sample()
 
-            clipped_ratio = torch.clamp(ratio, 1 - self.clip_epsilon, 1 + self.clip_epsilon)
-            policy_loss = -torch.min(ratio * advantages, clipped_ratio * advantages).mean()
+        states, mask = pad_and_mask(states)
+        actions, _ = pad_and_mask(actions)
+        returns, _ = pad_and_mask(returns)
+        timesteps, _ = pad_and_mask(timesteps)
 
-            value_loss = nn.MSELoss()(self.value(states), returns)
-            loss = policy_loss + 0.5 * value_loss
+        states = states.to(self.device)
+        actions = actions.to(self.device)
+        returns = returns.to(self.device)
+        timesteps = timesteps.to(self.device)
+        mask = mask.to(self.device)
 
-            self.optimizer.zero_grad()
-            loss.backward()
-            self.optimizer.step()
+        self.optimizer.zero_grad()
+        logits = self.dt_network(states, actions, returns, timesteps, mask)
+        logits = logits[:, -1]  # last step prediction
 
+        targets = actions[:, -1]
+        loss = F.cross_entropy(logits, targets)
+        loss.backward()
+        clip_grad_norm_(self.dt_network.parameters(), 1.0)
+        self.optimizer.step()
+        return loss.item()
 

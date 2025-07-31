@@ -205,43 +205,34 @@ def load_environment_variables(constraint_factor_veh, constraint_factor_ff, data
 def gen_state(veh_depart, idx_role, ff_array, ff_existing, dic_roles, dic_roles_skills, dic_ff, df_skills, \
              coord_x, coord_y, month_sin, month_cos, day_sin, day_cos, hour_sin, hour_cos, info_avail, max_duration, action_size):
 
+    nb_roles = 37
 
     # ff skills
     state = np.hstack(([get_roles_for_ff(veh, ff_array, dic_roles, dic_roles_skills) for veh in veh_depart])).astype(float)
 
     state /= 8 # normalization, 8 skill lvls
-        
+
+
+    # filler row
     filler = np.zeros((action_size-state.shape[0], state.shape[1])) # max 74 de base + 6 ff lent
     state = np.vstack((state, filler))
 
     # filler col
-    filler = np.zeros((state.shape[0], 37 - state.shape[1]))
+    filler = np.zeros((state.shape[0], nb_roles - state.shape[1]))
     state = np.concatenate((state, filler), axis=1)
 
     # resp time
-
     resp_time = np.array([dic_ff[f] for f in df_skills.loc[ff_existing, :].index])
     resp_time_norm = np.where(resp_time < 0, 0.0, resp_time/max_duration) # normalization
+    # resp_time_norm = np.where(resp_time < 0, 0, 1) # à voir avec mathieu pour l'AM
     mask_minus1 = (resp_time == -1) 
     mask_minus2 = (resp_time == -2)
     resp_time_all = np.stack([resp_time_norm, mask_minus1, mask_minus2], axis=1)
 
-    # zero_row = np.zeros((1, resp_time_all.shape[1])) # for current role to fill
-    # resp_time_all = np.vstack((zero_row, resp_time_all))
     zero_rows = np.zeros(((action_size-len(ff_existing)), resp_time_all.shape[1]))
     availability = np.vstack((resp_time_all, zero_rows))
 
-    # availability = np.array([0] + resp_time_norm + [0]*(action_size-len(ff_existing)-1)).reshape(-1, 1)  
     state = np.hstack((state, availability))
-
-    # attention mecanism
-    # print(state.shape)
-    # state_input = state.unsqueeze(1)
-    # # apprend 3 matrices linéaires pour Q, K, V
-    # attn = nn.MultiheadAttention(embed_dim=state.shape[1], num_heads=8, batch_first=False)
-    # # Self-attention : Q = K = V = X_input
-    # attn_output, attn_weights = attn(X_input, X_input, X_input)
-    # state = attn_output.squeeze(1)
 
     # current role to fill
     current_role = [0]*state.shape[1]
@@ -295,6 +286,26 @@ def compute_reward(dic_indic, dic_indic_old, num_d, dic_tarif):
 
 
     return reward
+
+def lazy_step(action, num_d, num_role, mandatory, degraded, new_dic_indic, skill_lvl):
+
+    if action < 79:
+        
+        new_dic_indic['skill_lvl'] += skill_lvl * 8  # was normalized in state
+        
+    else: # aucun pompier n'a les compétences requises
+
+        
+        if (num_role > mandatory) and (num_d == 1): # Si le rôle est facultatif et que c'est 
+        # le 1er véhicule 
+
+            degraded = True
+
+        else: # Si le rôle n'est pas facultatif ou que ce n'est pas le 1er véhicule    
+
+            new_dic_indic['rupture_ff'] += 1
+
+    return new_dic_indic
 
 
 def step(action, idx_role, ff_existing, all_ff_waiting, current_station, Z_1, dic_lent, \
