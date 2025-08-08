@@ -32,8 +32,10 @@ if __name__ == "__main__":
     parser.add_argument("--save_metrics_as", type=str, default="dic_indic_agent", help="save metrics as")
     parser.add_argument("--constraint_factor_veh", type=int, default=1, help="size of available vehicles in Z1. factor 1 is 100%, factor 3 is 33%")
     parser.add_argument("--constraint_factor_ff", type=int, default=1, help="size of available firefighters. factor 1 is 100%, factor 3 is 33%")
+    parser.add_argument("--log_interval", type=int, default=100, help="number of interventions between wandb logs")
 
     args = parser.parse_args()
+    log_interval = args.log_interval
 
     os.chdir('./Data')
 
@@ -80,6 +82,7 @@ if __name__ == "__main__":
                                                 args.dataset, args.start, args.end)
     
     vehicle_out, num_d, score, action_num = 0, 42, 0, 0
+    score_prev, action_prev = 0, 0
     all_ff_waiting, v_waiting, following_depart = (False,) * 3
     
     vehicle_evo, reward_evo, current_ff_inter = [], [], []
@@ -95,16 +98,17 @@ if __name__ == "__main__":
 
     max_duration = df_pc["Duration"].max()
     action_size = hyper_params["action_size"] # idx role + rl infos
-    dic_indic_100 = dic_indic.copy()
+    dic_indic_log = dic_indic.copy()
 
     traj_states = []
     traj_actions = []
     traj_rewards = []
     traj_returns = []
     traj_timesteps = []
-    t = 0  
-    max_len = 20 
+    t = 0
+    max_len = 20
     store_cpt = 0
+    loss_values = []
 
     os.chdir('../SVG_model')
 
@@ -580,6 +584,7 @@ if __name__ == "__main__":
                                                     store_cpt += 1
                                                 
                                                     loss = agent.learn()
+                                                    loss_values.append(loss)
 
                                                 else:
 
@@ -596,26 +601,30 @@ if __name__ == "__main__":
 
         old_date = date       
                                     
-        if num_inter % 100 == 0 and required_departure == {0:"RETURN"}:
-            rwd_mean = np.mean([row[1] for row in reward_evo[-100:]])
+        if num_inter % log_interval == 0 and required_departure == {0:"RETURN"}:
+            rwd_mean = np.mean([row[1] for row in reward_evo[-log_interval:]])
             lr = agent.optimizer.param_groups[0]['lr']
-            
+            mean_loss = np.mean(loss_values) if loss_values else 0
+            delta_score = score - score_prev
+            delta_action = action_num - action_prev
+            mean_rwd_per_act = delta_score / delta_action if delta_action else 0
+
             print(f"{num_inter} v_out: {vehicle_out} | rwd_mean: {rwd_mean:.2f} | v1notfroms1: {dic_indic['v1_not_sent_from_s1']} | v3notfroms3: {dic_indic['v3_not_sent_from_s3']} | v_not_found_ls: {dic_indic['v_not_found_in_last_station']} | deg: {dic_indic['v_degraded']} | store: {store_cpt} ", flush=True)
-            print(f"{num_inter} z1_VSAV_sent: {dic_indic['z1_VSAV_sent']} | z1_FPT_sent: {dic_indic['z1_FPT_sent']} | z1_EPA_sent: {dic_indic['z1_EPA_sent']} | VSAV_disp: {VSAV_disp} | FPT_disp: {FPT_disp} | EPA_disp: {EPA_disp} | loss: {loss} ", flush=True)
+            print(f"{num_inter} z1_VSAV_sent: {dic_indic['z1_VSAV_sent']} | z1_FPT_sent: {dic_indic['z1_FPT_sent']} | z1_EPA_sent: {dic_indic['z1_EPA_sent']} | VSAV_disp: {VSAV_disp} | FPT_disp: {FPT_disp} | EPA_disp: {EPA_disp} | loss: {mean_loss} ", flush=True)
 
-            dic_delta = {key:(dic_indic[key] - dic_indic_100[key]) for key in dic_indic}
+            dic_delta = {key:(dic_indic[key] - dic_indic_log[key]) for key in dic_indic}
 
-            wandb.log({"loss": loss,
-                       "rwd mean 100": rwd_mean,
-                       "sum rwd per act.": score/action_num,
+            wandb.log({"loss": mean_loss,
+                       "rwd mean interval": rwd_mean,
+                       "sum rwd per act.": mean_rwd_per_act,
                        "v_out": vehicle_out,
                        "v_sent": dic_delta['v_sent'],
                        "v_sent_full": dic_delta['v_sent_full'],
                        "v_degraded": dic_delta['v_degraded'],
                        "function_not_found": dic_delta['function_not_found'],
                        "rupture_ff": dic_delta['rupture_ff'],
-                       "ff_sent": dic_delta['ff_sent'],   
-                       "skill_lvl": dic_delta['skill_lvl'], 
+                       "ff_sent": dic_delta['ff_sent'],
+                       "skill_lvl": dic_delta['skill_lvl'],
                        "v_not_found_ls": dic_delta['v_not_found_in_last_station'],
                        "v1_not_from_s1": dic_delta['v1_not_sent_from_s1'],
                        "v3_not_from_s3": dic_delta['v3_not_sent_from_s3'],
@@ -629,7 +638,9 @@ if __name__ == "__main__":
                        "lr": lr
                         }, step=action_num)
 
-            dic_indic_100 = dic_indic.copy()
+            dic_indic_log = dic_indic.copy()
+            score_prev, action_prev = score, action_num
+            loss_values = []
 
         wandb.save(args.model_name + ".pth")
                      
