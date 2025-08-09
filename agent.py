@@ -925,7 +925,20 @@ class DT_Agent:
         self.device = device
         self.seed = seed
 
-        self.dt_network = DT_Network(self.state_size, self.action_size, self.feature_size, self.layer_size, self.num_layers, self.max_len, self.seed).to(device)
+        self.dt_network = DT_Network(
+            self.state_size,
+            self.action_size,
+            self.feature_size,
+            self.layer_size,
+            self.num_layers,
+            self.max_len,
+            self.seed,
+        ).to(device)
+        # Compile the network when possible for faster execution
+        try:
+            self.dt_network = torch.compile(self.dt_network)
+        except Exception:
+            pass
         self.optimizer = optim.Adam(self.dt_network.parameters(), lr=lr)
 
         self.memory = DT_ReplayBuffer(self.buffer_size, self.batch_size)
@@ -944,21 +957,20 @@ class DT_Agent:
             skill_lvl = potential_skills[potential_actions.index(action)]
             return action, skill_lvl
 
-        states=torch.stack(traj_states[-self.max_len:]).unsqueeze(0)
-        actions=torch.stack(traj_actions[-self.max_len:]).unsqueeze(0)
-        timesteps=torch.tensor(traj_timesteps[-self.max_len:]).unsqueeze(0)
-        
+        states = torch.stack(traj_states[-self.max_len:]).unsqueeze(0).to(self.device)
+        actions = torch.stack(traj_actions[-self.max_len:]).unsqueeze(0).to(self.device)
+        timesteps = torch.tensor(traj_timesteps[-self.max_len:], device=self.device).unsqueeze(0)
+
         if len(traj_returns) == 0:
-            returns_to_go = torch.zeros(1, 1, 1)  # fallback sécurisé
+            returns_to_go = torch.zeros(1, 1, 1, device=self.device)  # fallback sécurisé
             print("fallback")
         else:
-            returns_to_go = torch.stack(traj_returns[-self.max_len:]).unsqueeze(0)  # [1, T, 1]
-
+            returns_to_go = torch.stack(traj_returns[-self.max_len:]).unsqueeze(0).to(self.device)  # [1, T, 1]
 
         self.dt_network.eval()
-        with torch.no_grad():
-            mask = torch.ones(states.shape[:2], dtype=torch.bool).to(self.device)
-            logits = self.dt_network(states.to(self.device), actions.to(self.device), returns_to_go.to(self.device), timesteps.to(self.device), mask)
+        with torch.inference_mode():
+            mask = torch.ones(states.shape[:2], dtype=torch.bool, device=self.device)
+            logits = self.dt_network(states, actions, returns_to_go, timesteps, mask)
             last_logits = logits[:, -1]
             
 
@@ -984,11 +996,6 @@ class DT_Agent:
             return None
         
         states, actions, returns, timesteps, mask = self.memory.sample()
-
-        states, mask = pad_and_mask(states)
-        actions, _ = pad_and_mask(actions)
-        returns, _ = pad_and_mask(returns)
-        timesteps, _ = pad_and_mask(timesteps)
 
         states = states.to(self.device)
         actions = actions.to(self.device)
