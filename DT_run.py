@@ -42,7 +42,9 @@ if __name__ == "__main__":
     compute = False
 
     device = torch.device(hyper_params["device"])
-    torch.autograd.set_detect_anomaly(True)
+    # Enable cuDNN autotuner for faster convolutions on GPU
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = True
 
     if args.agent_model == "dt":
         agent = DT_Agent(**hyper_params)
