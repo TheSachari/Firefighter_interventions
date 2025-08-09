@@ -782,7 +782,7 @@ def filter_q_values(q_list, potential_actions):
     else:
         return 79
 
-# POMO
+# POMO (WIP)
 
 # def build_action_mask_batch(batch_valid_actions, action_space_size):
 #     batch_size = len(batch_valid_actions)

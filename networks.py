@@ -23,6 +23,7 @@ def weight_init_xavier(layers):
     for layer in layers:
         torch.nn.init.xavier_uniform_(layer.weight, gain=0.01)
 
+
 class NoisyLinear(nn.Linear):
     # Noisy Linear Layer for factorised Gaussian noise 
     def __init__(self, in_features, out_features, sigma_init=0.5, bias=True):
@@ -62,6 +63,7 @@ class NoisyLinear(nn.Linear):
         bias = self.mu_bias + self.sigma_bias * self.eps_q.clone()
 
         return F.linear(state, weight, bias) 
+        
     
 class Dueling_QNetwork(nn.Module):
 
@@ -73,6 +75,20 @@ class Dueling_QNetwork(nn.Module):
         self.num_layers = num_layers
         self.layer_type = layer_type
         self.use_batchnorm = use_batchnorm
+
+        # AM
+        self.n_heads = 4
+        self.d_model = 64
+        self.d_input = 40 # roles + disp
+        self.attention = Attention(self.d_input, self.d_model, self.n_heads)
+
+        # infos NN
+        self.role_encoder = nn.Linear(self.d_input, self.d_model)
+        self.infos_encoder = nn.Linear(self.d_input, self.d_model)
+
+        # Standard NN
+
+        state_size = self.d_model * (action_size + 2)
 
         layers = []
 
@@ -88,6 +104,8 @@ class Dueling_QNetwork(nn.Module):
             layers.append(nn.ReLU())
 
         self.model = nn.Sequential(*layers)
+
+        # Advantage / Value
         
         if layer_type == "noisy": # pas de batchnorm pour les noisy nets
 
@@ -108,14 +126,33 @@ class Dueling_QNetwork(nn.Module):
             weight_init([self.model,self.ff_1_A, self.ff_1_V])       
         
     def forward(self, state):
-        # print("state:", state.shape)
+        
+        # if state.dim() == 1:
+        #     state = state.unsqueeze(0)
 
-        
-        
-        if state.dim() == 1:
+        if state.dim() == 2:
             state = state.unsqueeze(0)
 
-        x = self.model(state)
+        B, L, F = state.shape
+
+        # print("1", state.shape)
+
+        infos_line = state[:, 0, :]    # [B, F]
+        role_line = state[:, 1, :]   # [B, F]
+        ff_state = state[:, 2:, :]   # [B, N, F]
+        # print("ff_state.shape =", ff_state.shape)
+        attn_output = self.attention(ff_state) 
+        x_flat = attn_output.flatten(start_dim=1)
+
+        infos_vec = self.infos_encoder(infos_line)
+        role_vec = self.role_encoder(role_line)
+        
+        
+        x = torch.cat([infos_vec, role_vec, x_flat], dim=1)
+
+        # print("2", x.shape)
+
+        x = self.model(x)
         # print("post unsq state:", state.shape)
 
         if self.layer_type == "noisy": # pas de batchnorm pour les noisy nets
@@ -153,11 +190,25 @@ class QVN(nn.Module):
         self.pis = torch.FloatTensor([np.pi*i for i in range(1, self.n_cos+1)]).view(1,1,self.n_cos).to(device)
         self.device = device
 
+        # AM
+        self.n_heads = 4
+        self.d_model = 64
+        self.d_input = 40 # roles + disp
+        self.attention = Attention(self.d_input, self.d_model, self.n_heads)
+
+        # infos NN
+        self.role_encoder = nn.Linear(self.d_input, self.d_model)
+        self.infos_encoder = nn.Linear(self.d_input, self.d_model)
+
+        # Standard NN
+
+        self.state_size = self.d_model * (self.action_size + 2)
+
 
         # Network Architecture
  
-        self.cos_embedding = nn.Linear(self.n_cos, layer_size)
-        self.cos_layer_out = layer_size
+        self.cos_embedding = nn.Linear(self.n_cos, self.layer_size)
+        self.cos_layer_out = self.layer_size
 
         layer = []
         
@@ -218,10 +269,30 @@ class QVN(nn.Module):
         assert cos.shape == (batch_size,n_tau,self.n_cos), "cos shape is incorrect"
         return cos
     
-    def forward(self, x):
+    def forward(self, state):
 
-        if x.dim() == 1:
-            x = x.unsqueeze(0)
+        assert state.dim() == 3, f"Expected state to be 3D [B, L, F], got {state.shape}"
+        assert state.shape[2] == 40, f"Expected last dimension to be 40, got {state.shape[2]}"
+
+        if state.dim() == 2:
+            state = state.unsqueeze(0)
+
+        B, L, F = state.shape
+
+        # print("1", state.shape)
+
+        infos_line = state[:, 0, :]    # [B, F]
+        role_line = state[:, 1, :]   # [B, F]
+        ff_state = state[:, 2:, :]   # [B, N, F]
+        # print("ff_state.shape =", ff_state.shape)
+        attn_output = self.attention(ff_state) 
+        x_flat = attn_output.flatten(start_dim=1)
+
+        infos_vec = self.infos_encoder(infos_line)
+        role_vec = self.role_encoder(role_line)
+        
+        
+        x = torch.cat([infos_vec, role_vec, x_flat], dim=1)
 
         x = self.head(x)
 
@@ -277,8 +348,6 @@ class FPN(nn.Module):
         weight_init_xavier([self.ff])
         
     def forward(self,x):
-
-
         q = self.softmax(self.ff(x)) 
         q_probs = q.exp()
         taus = torch.cumsum(q_probs, dim=1)
@@ -290,66 +359,168 @@ class FPN(nn.Module):
         
         return taus, taus_, entropy
 
+## AM
 
-### PPO
-
-class PolicyNet(nn.Module):
-    def __init__(self, state_size, action_size, layer_size, seed, num_layers = 8, use_batchnorm=True):
-
+class Attention(nn.Module):
+    def __init__(self, d_input, d_model, n_heads):
         super().__init__()
-        self.seed = torch.manual_seed(seed)
-        self.action_size = action_size
-        self.num_layers = num_layers
-        self.layer_type = layer_type
-        self.use_batchnorm = use_batchnorm
-
-        layers = []
-
-        layers.append(nn.Linear(state_size, layer_size))
-        if use_batchnorm:
-            layers.append(nn.BatchNorm1d(layer_size))
-        layers.append(nn.ReLU())
-
-        for _ in range(num_layers - 2):
-            layers.append(nn.Linear(layer_size, layer_size))
-            if use_batchnorm:
-                layers.append(nn.BatchNorm1d(layer_size))
-            layers.append(nn.ReLU())
-
-        layers.append(nn.Linear(layer_size, action_size))
-
-        self.model = nn.Sequential(*layers)
+        self.multihead_attn = nn.MultiheadAttention(embed_dim=d_model, num_heads=n_heads, batch_first=True)
+        self.embedding = nn.Linear(d_input, d_model)
+        self.norm = nn.LayerNorm(d_model)
 
     def forward(self, x):
-        return self.model(x)
+        x_embed = self.embedding(x)  # [n_pompiers, d_model]
+        attn_output, _ = self.multihead_attn(x_embed, x_embed, x_embed)
+        output = self.norm(attn_output + x_embed)  # résiduel + normalisation
+        return output # .squeeze(0)  # [n_pompiers, d_model]
 
-class ValueNet(nn.Module):
-    def __init__(self, state_size, layer_size, seed, num_layers = 8, use_batchnorm=True):
 
+
+class FirefighterEncoder(nn.Module):
+    def __init__(self, feature_size, d_model, n_heads, num_layers):
         super().__init__()
-        self.seed = torch.manual_seed(seed)
-        self.action_size = action_size
-        self.num_layers = num_layers
-        self.layer_type = layer_type
-        self.use_batchnorm = use_batchnorm
+        self.embedding = nn.Linear(feature_size, d_model)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=n_heads, batch_first=True)
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.norm = nn.LayerNorm(d_model)
 
-        layers = []
+    def forward(self, x):  # ff_lines: [B, 80, 40]
 
-        layers.append(nn.Linear(state_size, layer_size))
-        if use_batchnorm:
-            layers.append(nn.BatchNorm1d(layer_size))
-        layers.append(nn.ReLU())
+        if x.dim() == 3:
+            # Input shape: [B, N, F]
+            x = self.embedding(x)           # [B, N, d_model]
+            x = self.encoder(x)             # [B, N, d_model]
+            x = self.norm(x)
+            return x                        # [B, N, d_model]
 
-        for _ in range(num_layers - 2):
-            layers.append(nn.Linear(layer_size, layer_size))
-            if use_batchnorm:
-                layers.append(nn.BatchNorm1d(layer_size))
-            layers.append(nn.ReLU())
+        elif x.dim() == 4:
+            # Input shape: [B, T, N, F]
+            B, T, N, F = x.shape
+            x = self.embedding(x)           # [B, T, N, d_model]
+            x = x.view(B * T, N, -1)        # [B*T, N, d_model]
+            x = self.encoder(x)             # [B*T, N, d_model]
+            x = self.norm(x)
+            x = x.view(B, T, N, -1)         # [B, T, N, d_model]
+            return x
 
-        layers.append(nn.Linear(layer_size, 1))
+        else:
+            raise ValueError(f"Unsupported input shape {x.shape}, expected [B, N, F] or [B, T, N, F]")
 
-        self.model = nn.Sequential(*layers)
+### Decision Transformer Network
 
-    def forward(self, x):
-        return self.model(x).squeeze(-1)
+class DecisionTransformer(nn.Module):
+    def __init__(self, d_model, n_heads, num_layers):
+        super().__init__()
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=n_heads, batch_first=True)
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.norm = nn.LayerNorm(d_model)
     
+    def forward(self, x, key_padding_mask):
+        x = self.encoder(x, src_key_padding_mask=key_padding_mask)
+        return self.norm(x)
+
+def pad_and_mask(seqs, pad_value=0):
+    lengths = [seq.size(0) for seq in seqs]
+    max_len = max(lengths)
+    padded = torch.full((len(seqs), max_len, *seqs[0].size()[1:]), pad_value, dtype=seqs[0].dtype)
+    mask = torch.zeros(len(seqs), max_len, dtype=torch.bool)
+    for i, seq in enumerate(seqs):
+        padded[i, :seq.size(0)] = seq
+        mask[i, :seq.size(0)] = 1
+    return padded, mask
+
+class DT_Network(nn.Module):
+
+    def __init__(self, state_size, action_size, feature_size, layer_size, num_layers, max_len, seed):
+        super().__init__()
+
+        self.seed = torch.manual_seed(seed)
+        self.state_size = state_size
+        self.action_size = action_size
+        self.feature_size = feature_size
+        self.num_layers = num_layers
+        self.layer_size = layer_size
+        self.max_len = max_len
+    
+        # AM
+        self.n_heads = 4
+        self.d_model = 128
+        self.ff_encoder = FirefighterEncoder(self.feature_size, self.d_model, self.n_heads, self.num_layers)
+    
+        # infos NN
+        self.role_encoder = nn.Sequential(
+                                            nn.Linear(self.feature_size, self.d_model),
+                                            nn.ReLU(),
+                                            nn.Linear(self.d_model, self.d_model),
+                                            nn.ReLU(),
+                                            nn.Linear(self.d_model, self.d_model)
+                                        )
+        self.infos_encoder = nn.Sequential(
+                                            nn.Linear(self.feature_size, self.d_model),
+                                            nn.ReLU(),
+                                            nn.Linear(self.d_model, self.d_model),
+                                            nn.ReLU(),
+                                            nn.Linear(self.d_model, self.d_model)
+                                        )
+
+        # DT
+
+        self.layer_size = 256
+        
+        self.transformer = DecisionTransformer(self.layer_size, self.n_heads, self.num_layers)
+        
+        
+        self.state_embed = nn.Linear(82*self.d_model, self.layer_size)
+        self.action_embed = nn.Embedding(self.action_size, self.layer_size)
+        self.rtg_embed = nn.Linear(1, self.layer_size)
+        self.time_embed = nn.Embedding(self.max_len, self.layer_size)
+
+
+        self.predict_action = nn.Linear(self.layer_size, self.action_size)
+
+    def forward(self, states, actions, returns_to_go, timesteps, mask):
+
+        # print(states.shape)
+
+        B, T, L, F = states.size()
+        info_lines = states[:, :, 0, :]  # [B, T, F]
+        role_lines = states[:, :, 1, :]    # [B, T, F]
+        ff_lines = states[:, :, 2:, :]    # [B, T, N, F]
+
+        info_emb = self.infos_encoder(info_lines)  # [B, T, hidden]
+        # print("info_emb.shape", info_emb.shape)
+        role_emb = self.role_encoder(role_lines)        # [B, T, hidden]
+        # print("role_emb.shape", role_emb.shape)
+        ff_emb = self.ff_encoder(ff_lines)           # [B, T, N, hidden]
+        # print("ff_emb.shape", ff_emb.shape)
+        # ff_flat = ff_emb.flatten(start_dim=2)             # [B, T, N * hidden]
+        # print("ff_flat.shape", ff_flat.shape)
+
+        full_state = torch.cat([
+            info_emb.unsqueeze(2),  # [B, T, 1, hidden]
+            role_emb.unsqueeze(2),  # [B, T, 1, hidden]
+            ff_emb  # [B, T, 80, hidden]
+        ], dim=2)  # [B, T, 82, hidden]
+
+        state_flat = full_state.flatten(start_dim=2)  # [B, T, 82 * hidden]
+        state_embeddings = self.state_embed(state_flat)
+        # print("state_embeddings.shape", state_embeddings.shape)
+
+        action_embeddings = self.action_embed(actions)
+        # print("action_embeddings.shape", action_embeddings.shape)
+        rtg_embeddings = self.rtg_embed(returns_to_go)
+        # print("rtg_embeddings.shape", rtg_embeddings.shape)
+        time_embeddings = self.time_embed(timesteps)
+        # print("time_embeddings.shape", time_embeddings.shape)
+
+
+        tokens = torch.stack((rtg_embeddings, state_embeddings, action_embeddings), dim=2).view(B, 3 * T, -1)
+        time_embeddings = time_embeddings.repeat(1, 1, 3).view(B, 3 * T, -1)
+
+        x = tokens + time_embeddings
+        key_padding_mask = ~mask.unsqueeze(2).repeat(1, 1, 3).view(B, 3 * T)
+        # print("x.shape", x.shape)
+        x = self.transformer(x, key_padding_mask=key_padding_mask)
+        # print("x.shape", x.shape)
+        x = x[:, 1::3]  # only use state outputs for action prediction
+        return self.predict_action(x)

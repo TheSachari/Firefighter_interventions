@@ -47,10 +47,11 @@ if __name__ == "__main__":
     if args.agent_model == "dt":
         agent = DT_Agent(**hyper_params)
 
-    print("Agent", args.agent_model, "initialized", flush=True)
+    print("Agent", args.agent_model, "initialized in", args.train, flush=True)
 
     if args.train:
         if args.load:
+            print("Loading weights")
             os.chdir('../SVG_model')
             agent.dt_network.load_state_dict(torch.load(args.model_name, weights_only=True))
             print("Weights loaded")
