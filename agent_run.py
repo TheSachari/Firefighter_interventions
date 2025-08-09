@@ -49,6 +49,8 @@ if __name__ == "__main__":
         agent = DQN_Agent(**hyper_params)
     elif args.agent_model == "fqf":
         agent = FQF_Agent(**hyper_params)
+    elif args.agent_model == "cql":
+        agent = CQL_Agent(**hyper_params)
     elif args.agent_model == "pomo":
         agent = POMO_Agent(**hyper_params)
     print("Agent", args.agent_model, "initialized", flush=True)
