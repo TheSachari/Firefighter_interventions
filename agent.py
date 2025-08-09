@@ -303,8 +303,116 @@ class DQN_Agent():
     def lr_decay_3(self):
         self.lr = self.lr / 2
         for p in self.optimizer.param_groups:
-            p['lr'] = self.lr      
+            p['lr'] = self.lr
         print("step", self.t_step, "current lr :", self.lr)
+
+
+class CQL_Agent(DQN_Agent):
+    """DQN agent with Conservative Q-Learning regularization."""
+
+    def __init__(self, cql_alpha, **kwargs):
+        super().__init__(**kwargs)
+        self.cql_alpha = cql_alpha
+
+    def learn(self, experiences):
+        icm_loss = 0
+
+        self.optimizer.zero_grad()
+        states, actions, rewards, next_states, dones = experiences
+
+        states = torch.FloatTensor(states).to(self.device)
+        next_states = torch.FloatTensor(np.float32(next_states)).to(self.device)
+        actions = torch.LongTensor(actions).to(self.device).unsqueeze(1)
+        rewards = torch.FloatTensor(rewards).to(self.device).unsqueeze(1)
+        dones = torch.FloatTensor(dones).to(self.device).unsqueeze(1)
+
+        if self.curiosity != 0:
+            forward_pred_err, inverse_pred_err = self.ICM.calc_errors(state1=states, state2=next_states, action=actions)
+            r_i = self.eta * forward_pred_err
+            assert r_i.shape == rewards.shape, "r_ and r_e have not the same shape"
+            if self.curiosity == 1:
+                rewards += r_i.detach()
+            else:
+                rewards = r_i.detach()
+            icm_loss = self.ICM.update_ICM(forward_pred_err, inverse_pred_err)
+
+        Q_targets_next = self.qnetwork_target(next_states).detach().max(1)[0].unsqueeze(1)
+        Q_targets = rewards + (self.gamma**self.n_steps * Q_targets_next * (1 - dones))
+        q_values = self.qnetwork_local(states)
+        Q_expected = q_values.gather(1, actions)
+
+        logsumexp_q = torch.logsumexp(q_values, dim=1, keepdim=True)
+        cql_loss = (logsumexp_q - Q_expected).mean()
+
+        loss = F.mse_loss(Q_expected, Q_targets) + self.cql_alpha * cql_loss
+
+        loss.backward()
+        clip_grad_norm_(self.qnetwork_local.parameters(), 1)
+
+        if self.lr_dec != 0:
+            self.optimizer.step()
+
+        self.soft_update(self.qnetwork_local, self.qnetwork_target)
+
+        if (self.Q_updates % self.decay_update == 0):
+            print("update lr decay")
+            if self.lr_dec == 0:
+                self.lr_decay_0()
+            elif self.lr_dec == 1:
+                self.lr_decay_1()
+            elif self.lr_dec == 2:
+                self.lr_decay_2()
+            elif self.lr_dec == 3:
+                self.lr_decay_3()
+
+        return loss.detach().cpu().numpy(), icm_loss
+
+    def learn_per(self, experiences):
+        self.optimizer.zero_grad()
+        states, actions, rewards, next_states, dones, idx, weights = experiences
+
+        states = torch.from_numpy(states).float().to(self.device)
+        next_states = torch.from_numpy(next_states).float().to(self.device)
+        actions = torch.LongTensor(actions).to(self.device).unsqueeze(1)
+        rewards = torch.FloatTensor(rewards).to(self.device).unsqueeze(1)
+        dones = torch.FloatTensor(dones).to(self.device).unsqueeze(1)
+        weights = torch.from_numpy(weights).float().to(self.device)
+
+        Q_targets_next = self.qnetwork_target(next_states).detach().max(1)[0].unsqueeze(1)
+        Q_targets = rewards + (self.gamma**self.n_steps * Q_targets_next * (1 - dones))
+        q_values = self.qnetwork_local(states)
+        Q_expected = q_values.gather(1, actions)
+
+        td_error = Q_targets - Q_expected
+        per_loss = (td_error.pow(2) * weights).mean().to(self.device)
+
+        logsumexp_q = torch.logsumexp(q_values, dim=1, keepdim=True)
+        cql_loss = (logsumexp_q - Q_expected).mean()
+
+        loss = per_loss + self.cql_alpha * cql_loss
+
+        loss.backward()
+        clip_grad_norm_(self.qnetwork_local.parameters(), 1)
+
+        if self.lr_dec != 0:
+            self.optimizer.step()
+
+        self.soft_update(self.qnetwork_local, self.qnetwork_target)
+
+        if (self.Q_updates % self.decay_update == 0):
+            print("update lr decay")
+            if self.lr_dec == 0:
+                self.lr_decay_0()
+            elif self.lr_dec == 1:
+                self.lr_decay_1()
+            elif self.lr_dec == 2:
+                self.lr_decay_2()
+            elif self.lr_dec == 3:
+                self.lr_decay_3()
+
+        self.memory.update_priorities(idx, abs(td_error.data.cpu().numpy()))
+
+        return loss.detach().cpu().numpy()
 
 
 class FQF_Agent():
