@@ -1,5 +1,14 @@
 import torch
 import torch.nn as nn
+# --- Optionnel : neutraliser torch.compile pour ce module si activé ailleurs
+try:
+    import torch._dynamo as dynamo
+except Exception:
+    class _DummyDynamo:
+        def disable(self, *args, **kwargs):
+            def _deco(f): return f
+            return _deco
+    dynamo = _DummyDynamo()
 import numpy as np
 import math
 import torch.nn.functional as F
@@ -375,6 +384,33 @@ class Attention(nn.Module):
         return output # .squeeze(0)  # [n_pompiers, d_model]
 
 
+
+class SetEncoder(nn.Module):
+    def __init__(self, in_dim, d_model=128, nhead=4, num_layers=2):
+        super().__init__()
+        self.embedding = nn.Linear(in_dim, d_model)
+        encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=nhead, batch_first=True)
+        # IMPORTANT : désactive NestedTensor pour éviter l’erreur avec FakeTensor/torch.compile
+        self.encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=num_layers,
+            enable_nested_tensor=False
+        )
+        self.norm = nn.LayerNorm(d_model)
+
+    @dynamo.disable()  # évite les soucis TorchDynamo sur ce bloc précis
+    def forward(self, x, key_padding_mask):
+        """
+        x: [B, L, in_dim]
+        key_padding_mask: [B, L]  (True = à masquer). Peut être float/bool; on standardise.
+        """
+        x = self.embedding(x)
+        # Standardise le masque : bool + bon device + tenseur contigu
+        key_padding_mask = key_padding_mask.to(dtype=torch.bool, device=x.device)
+        x = x.contiguous()
+        x = self.encoder(x, src_key_padding_mask=key_padding_mask)
+        x = self.norm(x)
+        return x
 
 class FirefighterEncoder(nn.Module):
     def __init__(self, feature_size, d_model, n_heads, num_layers):
