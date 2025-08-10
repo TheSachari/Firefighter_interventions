@@ -58,11 +58,11 @@ if __name__ == "__main__":
     action_size = 80
     
     
-    # for idx, inter in tqdm(df_pc.iloc[:-20].iterrows(), total=len(df_pc.iloc[:-20])): # offset to deal with reinfo
-    for idx, inter in df_pc.iterrows():
-    
-        num_inter, date, pdd, required_departure, zone, duration, month, day, hour, minute, \
-        coord_x, coord_y, month_sin, month_cos, day_sin, day_cos, hour_sin, hour_cos = inter
+    # for idx, inter in tqdm(df_pc.iloc[:-20].itertuples(index=True, name=None), total=len(df_pc.iloc[:-20])): # offset to deal with reinfo
+    for row in df_pc.itertuples(index=True, name=None):
+
+        idx, num_inter, date, pdd, required_departure, zone, duration, month, day, hour, minute, \
+        coord_x, coord_y, month_sin, month_cos, day_sin, day_cos, hour_sin, hour_cos = row
         
         dic_ff = update_duration(date, old_date, current_ff_inter, dic_ff)
     
