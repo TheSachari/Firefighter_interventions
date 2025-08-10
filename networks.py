@@ -422,7 +422,8 @@ class FirefighterEncoder(nn.Module):
         super().__init__()
         self.embedding = nn.Linear(feature_size, d_model)
         encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=n_heads, batch_first=True)
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers,
+            enable_nested_tensor=False)
         self.norm = nn.LayerNorm(d_model)
 
     def forward(self, x):  # ff_lines: [B, 80, 40]
@@ -453,7 +454,8 @@ class DecisionTransformer(nn.Module):
     def __init__(self, d_model, n_heads, num_layers):
         super().__init__()
         encoder_layer = nn.TransformerEncoderLayer(d_model=d_model, nhead=n_heads, batch_first=True)
-        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
+        self.encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers,
+            enable_nested_tensor=False)
         self.norm = nn.LayerNorm(d_model)
     
     def forward(self, x, key_padding_mask):
