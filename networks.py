@@ -8,6 +8,11 @@ except Exception:
         def disable(self, *args, **kwargs):
             def _deco(f): return f
             return _deco
+        # provide a no-op fallback for mark_dynamic when torch._dynamo
+        # isn't available. This mirrors the real API but simply ignores
+        # the call so code relying on it can still run without errors.
+        def mark_dynamic(self, *args, **kwargs):
+            return None
     dynamo = _DummyDynamo()
 import numpy as np
 import math
@@ -519,6 +524,15 @@ class DT_Network(nn.Module):
         # print(states.shape)
 
         B, T, L, F = states.size()
+
+        # Enforce static expectations on invariant dimensions to provide
+        # explicit shape constraints to the compiler. Only batch (B) and
+        # sequence (T) dimensions may vary between calls.
+        assert L == 82, f"expected 82 lines in state tensor, got {L}"
+        assert F == self.feature_size, (
+            f"expected last dimension {self.feature_size}, got {F}"
+        )
+
         info_lines = states[:, :, 0, :]  # [B, T, F]
         role_lines = states[:, :, 1, :]    # [B, T, F]
         ff_lines = states[:, :, 2:, :]    # [B, T, N, F]
