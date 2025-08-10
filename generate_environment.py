@@ -149,8 +149,10 @@ def precompute_prob_dict(df_inter_clean):
 
     nested_dict = defaultdict(lambda: defaultdict(lambda: defaultdict(int)))
 
-    for row in df_inter_clean.itertuples(index=False):
-        incident, area, list_of_strings = row.incident_name, row.area_type, tuple(row.real_func)
+    for _, row in df_inter_clean.iterrows():
+        incident = row["incident_name"]
+        area = row["area_type"]
+        list_of_strings = tuple(row["real_func"])
         nested_dict[incident][area][list_of_strings] += 1
     
     nested_dict = {k: {kk: dict(vv) for kk, vv in v.items()} for k, v in nested_dict.items()}
@@ -312,10 +314,10 @@ def create_responses(df_responses, df_rank_incident):
     df_responses_short =  df_responses[df_responses['Nom'].isin(valeurs_a_chercher)].reset_index(drop = True)
     dic_inc_ar_mat = {}
 
-    for row in df_responses_short.itertuples(index=False):
-        nom = row.Nom
-        secteur = row.Secteur
-        materiel = row.Materiel
+    for _, row in df_responses_short.iterrows():
+        nom = row["Nom"]
+        secteur = row["Secteur"]
+        materiel = row["Materiel"]
         
         materiel_dict = extract_bracket_number_and_clean(materiel)
         

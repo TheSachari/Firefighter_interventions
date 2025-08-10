@@ -94,13 +94,15 @@ def gen_num_samples(num_samples, var):
 def new_df_sample(df_test, col, df_oversampled):
 
     list_of_df = []
-    for row in df_test.itertuples(index=False):
+    for _, row in df_test.iterrows():
 
-        if len(df_oversampled[df_oversampled[col] == getattr(row, col)]) >= row.new_samples:
-            list_of_df.append(df_oversampled[df_oversampled[col] == getattr(row, col)].sample(int(row.new_samples)))
+        if len(df_oversampled[df_oversampled[col] == row[col]]) >= row["new_samples"]:
+            list_of_df.append(
+                df_oversampled[df_oversampled[col] == row[col]].sample(int(row["new_samples"]))
+            )
 
         else:
-            list_of_df.append(df_oversampled[df_oversampled[col] == getattr(row, col)])
+            list_of_df.append(df_oversampled[df_oversampled[col] == row[col]])
 
     return pd.concat(list_of_df, ignore_index=True)
 
