@@ -384,14 +384,13 @@ def create_dic_roles(df_vehicles_history):
     
     dic_roles = {}
 
-    for row in df_vehicles_history.itertuples(index=False):
+    for _, row in df_vehicles_history.iterrows():
 
-        row_dict = row._asdict()
-        tm = row_dict["Type Matériel"]
-        t = row_dict["Type"]
-        f = row_dict["Fonction"]
-        ofo = row_dict["Ordre Fonction Occupee"]
-        fo = row_dict["Fonction Occupee"]
+        tm = row["Type Matériel"]
+        t = row["Type"]
+        f = row["Fonction"]
+        ofo = row["Ordre Fonction Occupee"]
+        fo = row["Fonction Occupee"]
         
         if (tm != ""):
             if tm not in dic_roles:
