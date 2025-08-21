@@ -21,7 +21,7 @@ if __name__ == "__main__":
     # parser.add_argument("--hyper_params", type=str, help="Agent hyper parameters")
     parser.add_argument("--hyper_params", type=str, help="Agent hyper parameters")
     parser.add_argument("--dataset", type=str, default="df_pc_fake.pkl", help="Name of dataset")
-    parser.add_argument("--eps_start", type=float, help="epsilon")
+    parser.add_argument("--eps_start", type=float, help="epsilon", default=1.0)
     parser.add_argument("--train", action='store_true', help="Train mode")
     parser.add_argument("--load", action='store_true', help="Load weights")
     parser.add_argument("--agent_model", type=str, help="Model name")
@@ -53,6 +53,8 @@ if __name__ == "__main__":
         agent = CQL_Agent(**hyper_params)
     elif args.agent_model == "pomo":
         agent = POMO_Agent(**hyper_params)
+    elif args.agent_model == "ppo":
+        agent = PPO_Agent(**hyper_params)
     print("Agent", args.agent_model, "initialized", flush=True)
 
     if args.train:

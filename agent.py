@@ -1042,11 +1042,9 @@ class DT_Agent:
             self.max_len,
             self.seed,
         ).to(device)
-        # Compile the network when possible for faster execution
-        try:
-            self.dt_network = torch.compile(self.dt_network)
-        except Exception:
-            pass
+
+        self.dt_network = torch.compile(self.dt_network, dynamic=True)
+
         self.optimizer = optim.Adam(self.dt_network.parameters(), lr=lr)
 
         self.memory = DT_ReplayBuffer(self.buffer_size, self.batch_size)
@@ -1121,4 +1119,198 @@ class DT_Agent:
         clip_grad_norm_(self.dt_network.parameters(), 1.0)
         self.optimizer.step()
         return loss.item()
+
+# PPO Agent
+
+class PPO_Agent():
+
+
+    def __init__(self,
+                 state_size,
+                 action_size,
+                 layer_type,
+                 layer_size,
+                 num_layers,
+                 use_batchnorm,
+                 n_steps,
+                 batch_size,
+                 buffer_size,
+                 lr,
+                 lr_dec,
+                 tau,
+                 gamma,
+                 munchausen,
+                 curiosity,
+                 curiosity_size,
+                 per,
+                 rdm,
+                 entropy_tau,
+                 entropy_tau_coeff,
+                 lo,
+                 alpha,
+                 N,
+                 entropy_coeff,
+                 update_every,
+                 max_train_steps,
+                 decay_update,
+                 device,
+                 seed):
+
+        self.state_size = state_size
+        self.action_size = action_size
+        self.layer_type = layer_type
+        self.layer_size = layer_size
+        self.num_layers = num_layers
+        self.use_batchnorm = use_batchnorm
+        self.device = device
+        self.gamma = gamma
+        self.batch_size = batch_size
+        self.update_every = update_every
+        self.t_step = 0
+        self.Q_updates = 1
+        self.lr = lr
+        self.lr_dec = lr_dec
+        self.max_train_steps = max_train_steps
+        self.decay_update = decay_update
+        self.entropy_coeff = entropy_coeff
+        self.clip_param = 0.2
+        self.epochs = 4
+
+        self.policy = PPO_ActorCritic(state_size, action_size,
+                                      layer_size, seed, num_layers,
+                                      layer_type, use_batchnorm).to(device)
+        self.qnetwork_local = self.policy  # compatibility with existing code
+        self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
+
+        self.memory = []  # store transitions
+        self.log_prob = None
+        self.value = None
+
+    def act(self, state, all_ff_waiting, eps):
+
+
+        potential_actions, potential_skills = get_potential_actions(state, all_ff_waiting)
+
+        if isinstance(state, np.ndarray):
+            state_t = torch.from_numpy(state).float().to(self.device)
+        else:
+            state_t = state.to(self.device)
+
+        self.policy.eval()
+        with torch.no_grad():
+            logits, value = self.policy(state_t)
+            probs = torch.softmax(logits, dim=-1).cpu().numpy().flatten()
+        self.policy.train()
+
+        masked = np.zeros_like(probs)
+        masked[potential_actions] = probs[potential_actions]
+        if masked.sum() == 0:
+            masked[potential_actions] = 1.0 / len(potential_actions)
+        else:
+            masked = masked / masked.sum()
+
+        action = np.random.choice(len(probs), p=masked)
+
+        prob_action = masked[action]
+        self.log_prob = np.log(prob_action + 1e-8)
+        self.value = value.item()
+
+        skill_lvl = potential_skills[potential_actions.index(action)]
+        return action, skill_lvl
+
+    def step(self, state, action, reward, next_state, done):
+
+        state_t = torch.from_numpy(state).float()
+        next_state_t = torch.from_numpy(next_state).float()
+
+        with torch.no_grad():
+            _, next_val = self.policy(next_state_t.to(self.device))
+
+        self.memory.append((state_t, action, reward, done,
+                            self.log_prob, self.value, next_val.item()))
+        self.t_step += 1
+
+        if (self.t_step) % self.update_every == 0:
+            loss = self.learn()
+            self.memory = []
+            self.Q_updates += 1
+            return loss
+        else:
+            return None
+
+    def learn(self):
+
+        states = torch.stack([m[0] for m in self.memory]).to(self.device)
+        actions = torch.tensor([m[1] for m in self.memory]).to(self.device)
+        rewards = torch.tensor([m[2] for m in self.memory]).to(self.device)
+        dones = torch.tensor([m[3] for m in self.memory], dtype=torch.float32).to(self.device)
+        old_log_probs = torch.tensor([m[4] for m in self.memory]).to(self.device)
+        values = torch.tensor([m[5] for m in self.memory]).to(self.device)
+        next_values = torch.tensor([m[6] for m in self.memory]).to(self.device)
+
+        advantages = []
+        gae = 0
+        lam = 0.95
+        for t in reversed(range(len(rewards))):
+            delta = rewards[t] + self.gamma * next_values[t] * (1 - dones[t]) - values[t]
+            gae = delta + self.gamma * lam * (1 - dones[t]) * gae
+            advantages.insert(0, gae)
+        advantages = torch.stack(advantages)
+        returns = advantages + values
+        advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        for _ in range(self.epochs):
+            logits, value_pred = self.policy(states)
+            dist = torch.distributions.Categorical(logits=logits)
+            log_probs = dist.log_prob(actions)
+            ratio = torch.exp(log_probs - old_log_probs)
+            surr1 = ratio * advantages
+            surr2 = torch.clamp(ratio, 1 - self.clip_param,
+                                1 + self.clip_param) * advantages
+            actor_loss = -torch.min(surr1, surr2).mean()
+            critic_loss = F.mse_loss(value_pred, returns)
+            entropy = dist.entropy().mean()
+            loss = actor_loss + 0.5 * critic_loss - self.entropy_coeff * entropy
+
+            self.optimizer.zero_grad()
+            loss.backward()
+            clip_grad_norm_(self.policy.parameters(), 1)
+            self.optimizer.step()
+
+        if (self.Q_updates % self.decay_update == 0):
+            if self.lr_dec == 0:
+                self.lr_decay_0()
+            elif self.lr_dec == 1:
+                self.lr_decay_1()
+            elif self.lr_dec == 2:
+                self.lr_decay_2()
+            elif self.lr_dec == 3:
+                self.lr_decay_3()
+
+        return loss.detach().cpu().numpy()
+
+    def lr_decay_0(self):
+        for p in self.optimizer.param_groups:
+            lr_now = p['lr']
+        print("step", self.t_step, "current lr :", lr_now)
+
+    def lr_decay_1(self):
+        lr_now = 0.9 * self.lr * (1 - self.t_step / self.max_train_steps) + 0.1 * self.lr
+        for p in self.optimizer.param_groups:
+            p['lr'] = lr_now
+        print("step", self.t_step, "current lr :", lr_now)
+
+    def lr_decay_2(self):
+        if (self.t_step % 5000 == 0):
+            self.lr = self.lr / 2
+            for p in self.optimizer.param_groups:
+                p['lr'] = self.lr
+        print("step", self.t_step, "current lr :", self.lr)
+
+    def lr_decay_3(self):
+        self.lr = self.lr / 2
+        for p in self.optimizer.param_groups:
+            p['lr'] = self.lr
+        print("step", self.t_step, "current lr :", self.lr)
+
 

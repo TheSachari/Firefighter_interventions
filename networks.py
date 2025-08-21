@@ -1,23 +1,28 @@
 import torch
 import torch.nn as nn
 # --- Optionnel : neutraliser torch.compile pour ce module si activé ailleurs
-try:
-    import torch._dynamo as dynamo
-except Exception:
-    class _DummyDynamo:
-        def disable(self, *args, **kwargs):
-            def _deco(f): return f
-            return _deco
-        # provide a no-op fallback for mark_dynamic when torch._dynamo
-        # isn't available. This mirrors the real API but simply ignores
-        # the call so code relying on it can still run without errors.
-        def mark_dynamic(self, *args, **kwargs):
-            return None
-    dynamo = _DummyDynamo()
+
+import torch._dynamo as dynamo
+
 import numpy as np
 import math
 import torch.nn.functional as F
 from copy import copy
+
+class SafeBatchNorm1d(nn.BatchNorm1d):
+    """BatchNorm1d that safely handles batch of size 1 during training.
+
+    If the incoming batch has a single sample while the module is in training
+    mode, the normalization step is skipped to avoid runtime errors. This
+    mirrors a no-op identity layer for that particular batch size.
+    """
+
+    def forward(self, input):  # type: ignore[override]
+        if self.training and input.size(0) == 1:
+            return input
+        return super().forward(input)
+
+
 
 
 def weight_init(modules):
@@ -558,6 +563,10 @@ class DT_Network(nn.Module):
         state_embeddings = self.state_embed(state_flat)
         # print("state_embeddings.shape", state_embeddings.shape)
 
+        actions = actions.reshape(B, T)
+        returns_to_go = returns_to_go.reshape(B, T, 1)
+        timesteps = timesteps.reshape(B, T)
+
         action_embeddings = self.action_embed(actions)
         # print("action_embeddings.shape", action_embeddings.shape)
         rtg_embeddings = self.rtg_embed(returns_to_go)
@@ -576,3 +585,74 @@ class DT_Network(nn.Module):
         # print("x.shape", x.shape)
         x = x[:, 1::3]  # only use state outputs for action prediction
         return self.predict_action(x)
+
+# PPO
+
+class PPO_ActorCritic(nn.Module):
+    """Shared network for PPO agent producing policy logits and value."""
+
+    def __init__(self, state_size, action_size, layer_size, seed, num_layers=8, layer_type="ff", use_batchnorm=True):
+
+        super(PPO_ActorCritic, self).__init__()
+        self.seed = torch.manual_seed(seed)
+        self.action_size = action_size
+        self.num_layers = num_layers
+        self.layer_type = layer_type
+        self.use_batchnorm = use_batchnorm
+
+        # Attention module as in Dueling_QNetwork
+        self.n_heads = 4
+        self.d_model = 64
+        self.d_input = 40  # roles + disp
+        self.attention = Attention(self.d_input, self.d_model, self.n_heads)
+
+        # infos NN
+        self.role_encoder = nn.Linear(self.d_input, self.d_model)
+        self.infos_encoder = nn.Linear(self.d_input, self.d_model)
+
+        # Standard feed-forward body
+        state_size = self.d_model * (action_size + 2)
+        layers = []
+        layers.append(nn.Linear(state_size, layer_size))
+        if use_batchnorm:
+            layers.append(SafeBatchNorm1d(layer_size))
+        layers.append(nn.ReLU())
+
+        for _ in range(num_layers - 1):
+            layers.append(nn.Linear(layer_size, layer_size))
+            if use_batchnorm:
+                layers.append(SafeBatchNorm1d(layer_size))
+            layers.append(nn.ReLU())
+
+        self.model = nn.Sequential(*layers)
+
+        # Policy and value heads
+        self.policy = nn.Linear(layer_size, action_size)
+        self.value = nn.Linear(layer_size, 1)
+        weight_init([self.model, self.policy, self.value])
+
+    def forward(self, state):
+
+        if state.dim() == 2:
+            state = state.unsqueeze(0)
+
+        B, L, F = state.shape
+
+        infos_line = state[:, 0, :]
+        role_line = state[:, 1, :]
+        ff_state = state[:, 2:, :]
+
+        attn_output = self.attention(ff_state)
+        x_flat = attn_output.flatten(start_dim=1)
+
+        infos_vec = self.infos_encoder(infos_line)
+        role_vec = self.role_encoder(role_line)
+
+        x = torch.cat([infos_vec, role_vec, x_flat], dim=1)
+        x = self.model(x)
+
+        policy_logits = self.policy(x)
+        value = self.value(x).squeeze(-1)
+
+        return policy_logits, value
+

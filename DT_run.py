@@ -14,6 +14,8 @@ import pickle
 from IPython.display import clear_output
 from tqdm.auto import tqdm
 import wandb
+import torch._dynamo
+torch._dynamo.config.suppress_errors = True
 
 if __name__ == "__main__":
 
@@ -533,7 +535,7 @@ if __name__ == "__main__":
                                                               day_cos, hour_sin, hour_cos, info_avail, max_duration, action_size)
                                                    
                                             action, skill_lvl = agent.act(state, all_ff_waiting, traj_states, traj_actions, \
-                                                                          traj_rewards, traj_timesteps)
+                                                                          traj_returns, traj_timesteps)
 
     
                                             dic_indic, dic_lent, all_roles_found, vehicle_found, planning, dic_vehicles, dic_ff, idx_role, \
