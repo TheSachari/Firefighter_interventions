@@ -1185,6 +1185,7 @@ class PPO_Agent():
         self.memory = []  # store transitions
         self.log_prob = None
         self.value = None
+        self.invalid_actions = None
 
     def act(self, state, all_ff_waiting, eps):
 
@@ -1199,24 +1200,21 @@ class PPO_Agent():
         self.policy.eval()
         with torch.no_grad():
             logits, value = self.policy(state_t)
-            probs = torch.softmax(logits, dim=-1).cpu().numpy().flatten()
         self.policy.train()
 
-        masked = np.zeros_like(probs)
-        masked[potential_actions] = probs[potential_actions]
-        if masked.sum() == 0:
-            masked[potential_actions] = 1.0 / len(potential_actions)
-        else:
-            masked = masked / masked.sum()
-
-        action = np.random.choice(len(probs), p=masked)
-
-        prob_action = masked[action]
-        self.log_prob = np.log(prob_action + 1e-8)
+        invalid_actions = [a for a in range(self.action_size) if a not in potential_actions]
+        masked_logits = logits.clone()
+        if invalid_actions:
+            masked_logits[invalid_actions] = -float('inf')
+        dist = torch.distributions.Categorical(logits=masked_logits)
+        action = dist.sample()
+        self.log_prob = dist.log_prob(action).item()
         self.value = value.item()
+        self.invalid_actions = invalid_actions
 
-        skill_lvl = potential_skills[potential_actions.index(action)]
-        return action, skill_lvl
+        action_int = action.item()
+        skill_lvl = potential_skills[potential_actions.index(action_int)]
+        return action_int, skill_lvl
 
     def step(self, state, action, reward, next_state, done):
 
@@ -1227,7 +1225,8 @@ class PPO_Agent():
             _, next_val = self.policy(next_state_t.to(self.device))
 
         self.memory.append((state_t, action, reward, done,
-                            self.log_prob, self.value, next_val.item()))
+                            self.log_prob, self.value, next_val.item(),
+                            self.invalid_actions))
         self.t_step += 1
 
         if (self.t_step) % self.update_every == 0:
@@ -1247,6 +1246,7 @@ class PPO_Agent():
         old_log_probs = torch.tensor([m[4] for m in self.memory]).to(self.device)
         values = torch.tensor([m[5] for m in self.memory]).to(self.device)
         next_values = torch.tensor([m[6] for m in self.memory]).to(self.device)
+        invalid_actions = [m[7] for m in self.memory]
 
         advantages = []
         gae = 0
@@ -1261,9 +1261,13 @@ class PPO_Agent():
 
         for _ in range(self.epochs):
             logits, value_pred = self.policy(states)
-            dist = torch.distributions.Categorical(logits=logits)
-            log_probs = dist.log_prob(actions)
-            ratio = torch.exp(log_probs - old_log_probs)
+            masked_logits = logits.clone()
+            for i, inval in enumerate(invalid_actions):
+                if inval:
+                    masked_logits[i, inval] = -float('inf')
+            dist = torch.distributions.Categorical(logits=masked_logits)
+            new_log_probs = dist.log_prob(actions)
+            ratio = torch.exp(new_log_probs - old_log_probs)
             surr1 = ratio * advantages
             surr2 = torch.clamp(ratio, 1 - self.clip_param,
                                 1 + self.clip_param) * advantages
