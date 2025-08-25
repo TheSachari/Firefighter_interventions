@@ -1177,8 +1177,9 @@ class PPO_Agent():
         self.epochs = 4
 
         self.qnetwork_local = PPO_ActorCritic(state_size, action_size,
-                                      layer_size, seed, num_layers,
-                                      layer_type, use_batchnorm).to(device)
+                                             layer_size, seed, num_layers,
+                                             layer_type, use_batchnorm).to(device)
+
         self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=lr)
 
         self.memory = []  # store transitions
@@ -1204,12 +1205,9 @@ class PPO_Agent():
         invalid_actions = [a for a in range(self.action_size) if a not in potential_actions]
         masked_logits = logits.clone()
 
-
         if invalid_actions:
-            invalid_tensor = torch.tensor(invalid_actions, dtype=torch.long, device=masked_logits.device)
-            assert torch.all(invalid_tensor >= 0)
-            assert torch.all(invalid_tensor < masked_logits.size(-1))
-            masked_logits[invalid_tensor] = float('-inf')
+            masked_logits[invalid_actions] = -1e9
+
         dist = torch.distributions.Categorical(logits=masked_logits)
         action = dist.sample()
         self.log_prob = dist.log_prob(action).item()
@@ -1228,9 +1226,10 @@ class PPO_Agent():
         with torch.no_grad():
             _, next_val = self.qnetwork_local(next_state_t.to(self.device))
 
+        mask = self.invalid_actions.copy() if self.invalid_actions is not None else []
         self.memory.append((state_t, action, reward, done,
-                            self.log_prob, self.value, next_val.item(),
-                            self.invalid_actions))
+                            self.log_prob, self.value, next_val.item(),self.invalid_actions))
+
         self.t_step += 1
 
         if (self.t_step) % self.update_every == 0:
@@ -1268,7 +1267,8 @@ class PPO_Agent():
             masked_logits = logits.clone()
             for i, inval in enumerate(invalid_actions):
                 if inval:
-                    masked_logits[i, inval] = -float('inf')
+                    masked_logits[i, inval] = -1e9
+
             dist = torch.distributions.Categorical(logits=masked_logits)
             new_log_probs = dist.log_prob(actions)
             ratio = torch.exp(new_log_probs - old_log_probs)
