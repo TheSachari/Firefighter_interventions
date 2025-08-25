@@ -1176,11 +1176,10 @@ class PPO_Agent():
         self.clip_param = 0.2
         self.epochs = 4
 
-        self.policy = PPO_ActorCritic(state_size, action_size,
+        self.qnetwork_local = PPO_ActorCritic(state_size, action_size,
                                       layer_size, seed, num_layers,
                                       layer_type, use_batchnorm).to(device)
-        self.qnetwork_local = self.policy  # compatibility with existing code
-        self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
+        self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=lr)
 
         self.memory = []  # store transitions
         self.log_prob = None
@@ -1197,15 +1196,20 @@ class PPO_Agent():
         else:
             state_t = state.to(self.device)
 
-        self.policy.eval()
+        self.qnetwork_local.eval()
         with torch.no_grad():
-            logits, value = self.policy(state_t)
-        self.policy.train()
+            logits, value = self.qnetwork_local(state_t)
+        self.qnetwork_local.train()
 
         invalid_actions = [a for a in range(self.action_size) if a not in potential_actions]
         masked_logits = logits.clone()
+
+
         if invalid_actions:
-            masked_logits[invalid_actions] = -float('inf')
+            invalid_tensor = torch.tensor(invalid_actions, dtype=torch.long, device=masked_logits.device)
+            assert torch.all(invalid_tensor >= 0)
+            assert torch.all(invalid_tensor < masked_logits.size(-1))
+            masked_logits[invalid_tensor] = float('-inf')
         dist = torch.distributions.Categorical(logits=masked_logits)
         action = dist.sample()
         self.log_prob = dist.log_prob(action).item()
@@ -1222,7 +1226,7 @@ class PPO_Agent():
         next_state_t = torch.from_numpy(next_state).float()
 
         with torch.no_grad():
-            _, next_val = self.policy(next_state_t.to(self.device))
+            _, next_val = self.qnetwork_local(next_state_t.to(self.device))
 
         self.memory.append((state_t, action, reward, done,
                             self.log_prob, self.value, next_val.item(),
@@ -1260,7 +1264,7 @@ class PPO_Agent():
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         for _ in range(self.epochs):
-            logits, value_pred = self.policy(states)
+            logits, value_pred = self.qnetwork_local(states)
             masked_logits = logits.clone()
             for i, inval in enumerate(invalid_actions):
                 if inval:
@@ -1278,7 +1282,7 @@ class PPO_Agent():
 
             self.optimizer.zero_grad()
             loss.backward()
-            clip_grad_norm_(self.policy.parameters(), 1)
+            clip_grad_norm_(self.qnetwork_local.parameters(), 1)
             self.optimizer.step()
 
         if (self.Q_updates % self.decay_update == 0):
