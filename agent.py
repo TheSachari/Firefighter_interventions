@@ -1176,15 +1176,15 @@ class PPO_Agent():
         self.clip_param = 0.2
         self.epochs = 4
 
-        self.policy = PPO_ActorCritic(state_size, action_size,
-                                      layer_size, seed, num_layers,
-                                      layer_type, use_batchnorm).to(device)
-        self.qnetwork_local = self.policy  # compatibility with existing code
-        self.optimizer = optim.Adam(self.policy.parameters(), lr=lr)
+        self.qnetwork_local = PPO_ActorCritic(state_size, action_size,
+                                             layer_size, seed, num_layers,
+                                             layer_type, use_batchnorm).to(device)
+        self.optimizer = optim.Adam(self.qnetwork_local.parameters(), lr=lr)
 
         self.memory = []  # store transitions
         self.log_prob = None
         self.value = None
+        self.invalid_actions = None
 
     def act(self, state, all_ff_waiting, eps):
 
@@ -1196,27 +1196,24 @@ class PPO_Agent():
         else:
             state_t = state.to(self.device)
 
-        self.policy.eval()
+        self.qnetwork_local.eval()
         with torch.no_grad():
-            logits, value = self.policy(state_t)
-            probs = torch.softmax(logits, dim=-1).cpu().numpy().flatten()
-        self.policy.train()
+            logits, value = self.qnetwork_local(state_t)
+        self.qnetwork_local.train()
 
-        masked = np.zeros_like(probs)
-        masked[potential_actions] = probs[potential_actions]
-        if masked.sum() == 0:
-            masked[potential_actions] = 1.0 / len(potential_actions)
-        else:
-            masked = masked / masked.sum()
-
-        action = np.random.choice(len(probs), p=masked)
-
-        prob_action = masked[action]
-        self.log_prob = np.log(prob_action + 1e-8)
+        invalid_actions = [a for a in range(self.action_size) if a not in potential_actions]
+        masked_logits = logits.clone()
+        if invalid_actions:
+            masked_logits[invalid_actions] = -1e9
+        dist = torch.distributions.Categorical(logits=masked_logits)
+        action = dist.sample()
+        self.log_prob = dist.log_prob(action).item()
         self.value = value.item()
+        self.invalid_actions = invalid_actions
 
-        skill_lvl = potential_skills[potential_actions.index(action)]
-        return action, skill_lvl
+        action_int = action.item()
+        skill_lvl = potential_skills[potential_actions.index(action_int)]
+        return action_int, skill_lvl
 
     def step(self, state, action, reward, next_state, done):
 
@@ -1224,10 +1221,12 @@ class PPO_Agent():
         next_state_t = torch.from_numpy(next_state).float()
 
         with torch.no_grad():
-            _, next_val = self.policy(next_state_t.to(self.device))
+            _, next_val = self.qnetwork_local(next_state_t.to(self.device))
 
+        mask = self.invalid_actions.copy() if self.invalid_actions is not None else []
         self.memory.append((state_t, action, reward, done,
-                            self.log_prob, self.value, next_val.item()))
+                            self.log_prob, self.value, next_val.item(),
+                            mask))
         self.t_step += 1
 
         if (self.t_step) % self.update_every == 0:
@@ -1247,6 +1246,7 @@ class PPO_Agent():
         old_log_probs = torch.tensor([m[4] for m in self.memory]).to(self.device)
         values = torch.tensor([m[5] for m in self.memory]).to(self.device)
         next_values = torch.tensor([m[6] for m in self.memory]).to(self.device)
+        invalid_actions = [m[7] for m in self.memory]
 
         advantages = []
         gae = 0
@@ -1260,10 +1260,14 @@ class PPO_Agent():
         advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
         for _ in range(self.epochs):
-            logits, value_pred = self.policy(states)
-            dist = torch.distributions.Categorical(logits=logits)
-            log_probs = dist.log_prob(actions)
-            ratio = torch.exp(log_probs - old_log_probs)
+            logits, value_pred = self.qnetwork_local(states)
+            masked_logits = logits.clone()
+            for i, inval in enumerate(invalid_actions):
+                if inval:
+                    masked_logits[i, inval] = -1e9
+            dist = torch.distributions.Categorical(logits=masked_logits)
+            new_log_probs = dist.log_prob(actions)
+            ratio = torch.exp(new_log_probs - old_log_probs)
             surr1 = ratio * advantages
             surr2 = torch.clamp(ratio, 1 - self.clip_param,
                                 1 + self.clip_param) * advantages
@@ -1274,7 +1278,7 @@ class PPO_Agent():
 
             self.optimizer.zero_grad()
             loss.backward()
-            clip_grad_norm_(self.policy.parameters(), 1)
+            clip_grad_norm_(self.qnetwork_local.parameters(), 1)
             self.optimizer.step()
 
         if (self.Q_updates % self.decay_update == 0):
