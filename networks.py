@@ -214,6 +214,7 @@ class QVN(nn.Module):
         self.d_model = 64
         self.d_input = 40 # roles + disp
         self.attention = Attention(self.d_input, self.d_model, self.n_heads)
+        self.num_entities = self.action_size + 2
 
         # infos NN
         self.role_encoder = nn.Linear(self.d_input, self.d_model)
@@ -274,11 +275,11 @@ class QVN(nn.Module):
 
 
     def calc_input_layer(self):
-        x = torch.zeros(self.state_size).unsqueeze(0)
-        x = self.head(x)
+        dummy_state = torch.zeros(1, self.num_entities, self.d_input, device=self.device)
+        x = self._encode_state(dummy_state)
         x = self.model(x)
         return x.flatten().shape[0]
-        
+
     def calc_cos(self,taus):
 
         batch_size = taus.shape[0]
@@ -287,33 +288,61 @@ class QVN(nn.Module):
 
         assert cos.shape == (batch_size,n_tau,self.n_cos), "cos shape is incorrect"
         return cos
-    
-    def forward(self, state):
 
-        assert state.dim() == 3, f"Expected state to be 3D [B, L, F], got {state.shape}"
-        assert state.shape[2] == 40, f"Expected last dimension to be 40, got {state.shape[2]}"
+    def _reshape_state(self, state: torch.Tensor) -> torch.Tensor:
+        """Ensure the state tensor has shape [B, L, F]."""
 
-        if state.dim() == 2:
-            state = state.unsqueeze(0)
+        if state.dim() == 1:
+            if state.numel() % self.d_input != 0:
+                raise AssertionError(
+                    f"Flattened state of length {state.numel()} is not divisible by feature size {self.d_input}"
+                )
+            state = state.reshape(1, -1, self.d_input)
+        elif state.dim() == 2:
+            if state.shape[-1] == self.d_input and state.shape[0] == self.num_entities:
+                state = state.unsqueeze(0)
+            elif state.shape[-1] == self.d_input and state.shape[0] != self.num_entities:
+                state = state.unsqueeze(0)
+            elif state.shape[-1] % self.d_input == 0:
+                L = state.shape[-1] // self.d_input
+                state = state.reshape(state.shape[0], L, self.d_input)
+            else:
+                raise AssertionError(
+                    f"State with shape {state.shape} cannot be reshaped to [B, L, {self.d_input}]"
+                )
+        elif state.dim() != 3:
+            raise AssertionError(
+                f"Unsupported state dimension {state.dim()}; expected 1D, 2D, or 3D tensor"
+            )
+
+        if state.shape[-1] != self.d_input:
+            raise AssertionError(
+                f"Expected feature dimension {self.d_input}, got {state.shape[-1]}"
+            )
+        return state
+
+    def _encode_state(self, state: torch.Tensor) -> torch.Tensor:
+        state = self._reshape_state(state)
 
         B, L, F = state.shape
 
-        # print("1", state.shape)
+        infos_line = state[:, 0, :]
+        role_line = state[:, 1, :]
+        ff_state = state[:, 2:, :]
 
-        infos_line = state[:, 0, :]    # [B, F]
-        role_line = state[:, 1, :]   # [B, F]
-        ff_state = state[:, 2:, :]   # [B, N, F]
-        # print("ff_state.shape =", ff_state.shape)
-        attn_output = self.attention(ff_state) 
+        attn_output = self.attention(ff_state)
         x_flat = attn_output.flatten(start_dim=1)
 
         infos_vec = self.infos_encoder(infos_line)
         role_vec = self.role_encoder(role_line)
-        
-        
-        x = torch.cat([infos_vec, role_vec, x_flat], dim=1)
 
+        x = torch.cat([infos_vec, role_vec, x_flat], dim=1)
         x = self.head(x)
+        return x
+
+    def forward(self, state):
+
+        x = self._encode_state(state)
 
         return self.model(x)
         
