@@ -685,3 +685,75 @@ class PPO_ActorCritic(nn.Module):
 
         return policy_logits, value
 
+
+class DenseSeparatedActorCritic(nn.Module):
+    """Actor-Critic model with independent dense networks for policy and value."""
+
+    def __init__(
+        self,
+        state_size,
+        action_size,
+        layer_size,
+        seed,
+        num_layers=8,
+        use_batchnorm=True,
+    ):
+        super().__init__()
+        self.seed = torch.manual_seed(seed)
+        self.state_size = state_size
+        self.action_size = action_size
+        self.layer_size = layer_size
+        self.num_layers = num_layers
+        self.use_batchnorm = use_batchnorm
+
+        self.actor_body = self._build_body()
+        self.critic_body = self._build_body()
+
+        self.policy_head = nn.Linear(layer_size, action_size)
+        self.value_head = nn.Linear(layer_size, 1)
+
+        weight_init(
+            [
+                self.actor_body,
+                self.critic_body,
+                self.policy_head,
+                self.value_head,
+            ]
+        )
+
+    def _build_body(self):
+        layers = [nn.Linear(self.state_size, self.layer_size)]
+        if self.use_batchnorm:
+            layers.append(SafeBatchNorm1d(self.layer_size))
+        layers.append(nn.ReLU())
+
+        for _ in range(self.num_layers - 1):
+            layers.append(nn.Linear(self.layer_size, self.layer_size))
+            if self.use_batchnorm:
+                layers.append(SafeBatchNorm1d(self.layer_size))
+            layers.append(nn.ReLU())
+
+        return nn.Sequential(*layers)
+
+    def forward(self, state):
+        if state.dim() == 1:
+            state = state.unsqueeze(0)
+        if state.dim() == 2:
+            state = state.unsqueeze(0)
+
+        batch_size = state.shape[0]
+        flat_state = state.view(batch_size, -1)
+
+        if flat_state.size(1) != self.state_size:
+            raise ValueError(
+                f"Expected flattened state of size {self.state_size}, got {flat_state.size(1)}"
+            )
+
+        actor_features = self.actor_body(flat_state)
+        critic_features = self.critic_body(flat_state)
+
+        policy_logits = self.policy_head(actor_features)
+        value = self.value_head(critic_features).squeeze(-1)
+
+        return policy_logits, value
+
