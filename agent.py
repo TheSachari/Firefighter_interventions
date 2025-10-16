@@ -58,12 +58,12 @@ class ActorCritic:
 
         self.munchausen = munchausen
         self.curiosity = curiosity
-        self.per = per
+        if per not in (0, None):
+            raise ValueError(
+                "Prioritized experience replay is no longer supported for PPO/ActorCritic."
+            )
         self.curiosity_size = curiosity_size if curiosity_size is not None else layer_size
-        self.buffer_size = buffer_size if buffer_size is not None else update_every
-        self.batch_size = batch_size if batch_size is not None else update_every
         self.n_steps = max(1, n_steps)
-        self.rdm = rdm
         self.alpha = alpha
         self.lo = lo
         self.entropy_tau = entropy_tau
@@ -80,31 +80,6 @@ class ActorCritic:
         ).to(device)
 
         self.memory = None
-        if self.per == 0:
-            self.memory = ReplayBuffer(
-                self.buffer_size,
-                self.batch_size,
-                seed,
-                gamma,
-                self.n_steps,
-                self.rdm,
-            )
-        elif self.per == 1:
-            self.memory = PrioritizedReplay(
-                self.buffer_size,
-                self.batch_size,
-                seed,
-                gamma,
-                self.n_steps,
-            )
-        elif self.per == 2:
-            self.memory = N_Steps_Prioritized_ReplayBuffer(
-                self.buffer_size,
-                self.batch_size,
-                seed,
-                gamma,
-                self.n_steps,
-            )
 
         self.ICM = None
         if self.curiosity != 0:
@@ -168,20 +143,9 @@ class ActorCritic:
         self.rollout_storage.append(
             (state_t, action, reward, next_state_t, done, invalid_actions)
         )
-        if self.memory is not None and hasattr(self.memory, "add"):
-            self.memory.add(state_t, action, reward, next_state_t, done)
         self.last_invalid_actions = None
 
         self.t_step += 1
-
-        if (
-            self.memory is not None
-            and len(self.memory) >= self.batch_size
-            and self.t_step % self.update_every == 0
-        ):
-            experiences = self.memory.sample()
-            return self.learn_per(experiences)
-
         return None
 
     def learn(self):
@@ -269,90 +233,6 @@ class ActorCritic:
             "actor_loss": actor_loss.detach().cpu().item(),
             "critic_loss": critic_loss.detach().cpu().item(),
             "entropy": entropy.detach().cpu().item(),
-            "icm_loss": icm_loss if isinstance(icm_loss, float) else float(icm_loss),
-        }
-
-    def learn_per(self, experiences):
-        (
-            states,
-            actions,
-            rewards,
-            next_states,
-            dones,
-            idx,
-            weights,
-        ) = experiences
-
-        states = torch.from_numpy(states).float().to(self.device)
-        next_states = torch.from_numpy(next_states).float().to(self.device)
-        actions = torch.tensor(actions, dtype=torch.long, device=self.device)
-        rewards = torch.tensor(rewards, dtype=torch.float32, device=self.device).unsqueeze(1)
-        dones = torch.tensor(dones, dtype=torch.float32, device=self.device).unsqueeze(1)
-        weights = torch.from_numpy(weights).float().to(self.device).unsqueeze(1)
-
-        icm_loss = 0.0
-        if self.curiosity != 0 and self.ICM is not None:
-            forward_pred_err, inverse_pred_err = self.ICM.calc_errors(
-                state1=states, state2=next_states, action=actions.unsqueeze(1)
-            )
-            intrinsic_reward = self.eta * forward_pred_err
-            if intrinsic_reward.shape != rewards.shape:
-                intrinsic_reward = intrinsic_reward.view_as(rewards)
-            if self.curiosity == 1:
-                rewards = rewards + intrinsic_reward.detach()
-            else:
-                rewards = intrinsic_reward.detach()
-            icm_loss = self.ICM.update_ICM(forward_pred_err, inverse_pred_err)
-
-        with torch.no_grad():
-            _, next_values = self.network(next_states)
-
-        logits, values = self.network(states)
-        dist = torch.distributions.Categorical(logits=logits)
-        log_probs = dist.log_prob(actions)
-        entropy = dist.entropy()
-
-        if self.munchausen:
-            rewards = rewards + self.alpha * torch.clamp(
-                log_probs.detach().unsqueeze(1), min=self.lo, max=0.0
-            )
-
-        targets = rewards + (self.gamma ** self.n_steps) * next_values * (1 - dones)
-        advantages = targets - values.detach()
-
-        weight_sum = weights.sum().clamp_min(1e-8)
-        weighted_entropy = (weights.squeeze(1) * entropy).sum() / weight_sum
-        actor_term = (weights.squeeze(1) * log_probs * advantages.squeeze(1)).sum() / weight_sum
-        actor_loss = -actor_term - self.entropy_coeff * weighted_entropy
-
-        self.actor_optimizer.zero_grad()
-        actor_loss.backward()
-        clip_grad_norm_(
-            list(self.network.actor_body.parameters())
-            + list(self.network.policy_head.parameters()),
-            self.grad_clip,
-        )
-        self.actor_optimizer.step()
-
-        self.critic_optimizer.zero_grad()
-        critic_errors = targets - values
-        critic_loss = ((weights * critic_errors.pow(2)).sum() / weight_sum)
-        critic_loss.backward()
-        clip_grad_norm_(
-            list(self.network.critic_body.parameters())
-            + list(self.network.value_head.parameters()),
-            self.grad_clip,
-        )
-        self.critic_optimizer.step()
-
-        td_error = critic_errors.detach().cpu().numpy().squeeze()
-        if hasattr(self.memory, "update_priorities"):
-            self.memory.update_priorities(idx, np.abs(td_error))
-
-        return {
-            "actor_loss": actor_loss.detach().cpu().item(),
-            "critic_loss": critic_loss.detach().cpu().item(),
-            "entropy": weighted_entropy.detach().cpu().item(),
             "icm_loss": icm_loss if isinstance(icm_loss, float) else float(icm_loss),
         }
 
@@ -589,7 +469,7 @@ class DQN_Agent():
             actions = torch.LongTensor(actions).to(self.device).unsqueeze(1)
             rewards = torch.FloatTensor(rewards).to(self.device).unsqueeze(1) 
             dones = torch.FloatTensor(dones).to(self.device).unsqueeze(1)
-            weights = torch.from_numpy(weights).float().to(self.device)
+            weights = torch.as_tensor(weights, dtype=torch.float32, device=self.device)
         
             # Get max predicted Q values (for next states) from target model
             Q_targets_next = self.qnetwork_target(next_states).detach().max(1)[0].unsqueeze(1)
@@ -722,7 +602,7 @@ class CQL_Agent(DQN_Agent):
         actions = torch.LongTensor(actions).to(self.device).unsqueeze(1)
         rewards = torch.FloatTensor(rewards).to(self.device).unsqueeze(1)
         dones = torch.FloatTensor(dones).to(self.device).unsqueeze(1)
-        weights = torch.from_numpy(weights).float().to(self.device)
+        weights = torch.as_tensor(weights, dtype=torch.float32, device=self.device)
 
         Q_targets_next = self.qnetwork_target(next_states).detach().max(1)[0].unsqueeze(1)
         Q_targets = rewards + (self.gamma**self.n_steps * Q_targets_next * (1 - dones))
