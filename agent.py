@@ -164,24 +164,10 @@ class ActorCritic:
         state_t = torch.from_numpy(state).float()
         next_state_t = torch.from_numpy(next_state).float()
 
-        if self.per == 0:
-            invalid_actions = self.last_invalid_actions or []
-            self.rollout_storage.append(
-                (state_t, action, reward, next_state_t, done, invalid_actions)
-            )
-            if self.memory is not None and hasattr(self.memory, "add"):
-                self.memory.add(state_t, action, reward, next_state_t, done)
-            self.last_invalid_actions = None
-
-            self.t_step += 1
-
-            if self.t_step % self.update_every == 0:
-                losses = self.learn()
-                self.rollout_storage = []
-                return losses
-
-            return None
-
+        invalid_actions = self.last_invalid_actions or []
+        self.rollout_storage.append(
+            (state_t, action, reward, next_state_t, done, invalid_actions)
+        )
         if self.memory is not None and hasattr(self.memory, "add"):
             self.memory.add(state_t, action, reward, next_state_t, done)
         self.last_invalid_actions = None
