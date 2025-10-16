@@ -1,5 +1,6 @@
 import torch
 import torch.optim as optim
+import torch.nn.functional as F
 from torch.nn.utils import clip_grad_norm_
 import numpy as np
 import random
@@ -9,6 +10,264 @@ from IntrinsicCuriosityModule import *
 from collective_functions import get_potential_actions
 
 import schedulefree
+
+
+class ActorCritic:
+    """On-policy actor-critic agent using ``DenseSeparatedActorCritic`` network."""
+
+    def __init__(
+        self,
+        state_size,
+        action_size,
+        layer_size,
+        num_layers,
+        use_batchnorm,
+        gamma,
+        update_every,
+        device,
+        seed,
+        actor_lr=3e-4,
+        critic_lr=1e-3,
+        entropy_coeff=0.01,
+        grad_clip=1.0,
+        munchausen=0,
+        curiosity=0,
+        per=0,
+        curiosity_size=None,
+        buffer_size=None,
+        batch_size=None,
+        n_steps=1,
+        rdm=True,
+        alpha=0.9,
+        lo=-1.0,
+        entropy_tau=1.0,
+        entropy_tau_coeff=1.0,
+    ):
+        self.state_size = state_size
+        self.action_size = action_size
+        self.gamma = gamma
+        self.update_every = update_every
+        self.device = device
+        self.entropy_coeff = entropy_coeff
+        self.grad_clip = grad_clip
+        self.t_step = 0
+        self.rollout_storage = []
+        self.last_invalid_actions = None
+        self.seed = seed
+        self.torch_seed = torch.manual_seed(seed)
+
+        self.munchausen = munchausen
+        self.curiosity = curiosity
+        self.per = per
+        self.curiosity_size = curiosity_size if curiosity_size is not None else layer_size
+        self.buffer_size = buffer_size if buffer_size is not None else update_every
+        self.batch_size = batch_size if batch_size is not None else update_every
+        self.n_steps = max(1, n_steps)
+        self.rdm = rdm
+        self.alpha = alpha
+        self.lo = lo
+        self.entropy_tau = entropy_tau
+        self.entropy_tau_coeff = entropy_tau_coeff
+        self.eta = 0.1
+
+        self.network = DenseSeparatedActorCritic(
+            state_size,
+            action_size,
+            layer_size,
+            seed,
+            num_layers=num_layers,
+            use_batchnorm=use_batchnorm,
+        ).to(device)
+
+        self.memory = None
+        if self.per == 0:
+            self.memory = ReplayBuffer(
+                self.buffer_size,
+                self.batch_size,
+                seed,
+                gamma,
+                self.n_steps,
+                self.rdm,
+            )
+        elif self.per == 1:
+            self.memory = PrioritizedReplay(
+                self.buffer_size,
+                self.batch_size,
+                seed,
+                gamma,
+                self.n_steps,
+            )
+        elif self.per == 2:
+            self.memory = N_Steps_Prioritized_ReplayBuffer(
+                self.buffer_size,
+                self.batch_size,
+                seed,
+                gamma,
+                self.n_steps,
+            )
+
+        self.ICM = None
+        if self.curiosity != 0:
+            inverse_m = Inverse(self.state_size, self.action_size, self.curiosity_size)
+            forward_m = Forward(
+                self.state_size,
+                self.action_size,
+                inverse_m.calc_input_layer(),
+                device=device,
+            )
+            self.ICM = ICM(inverse_m, forward_m).to(device)
+
+        actor_parameters = (
+            list(self.network.actor_body.parameters())
+            + list(self.network.policy_head.parameters())
+        )
+        critic_parameters = (
+            list(self.network.critic_body.parameters())
+            + list(self.network.value_head.parameters())
+        )
+
+        self.actor_optimizer = optim.Adam(actor_parameters, lr=actor_lr)
+        self.critic_optimizer = optim.Adam(critic_parameters, lr=critic_lr)
+
+    def act(self, state, all_ff_waiting, eps=0.0):
+        potential_actions, potential_skills = get_potential_actions(
+            state, all_ff_waiting
+        )
+
+        if isinstance(state, np.ndarray):
+            state_t = torch.from_numpy(state).float().to(self.device)
+        else:
+            state_t = state.to(self.device)
+
+        self.network.eval()
+        with torch.no_grad():
+            logits, value = self.network(state_t)
+        self.network.train()
+
+        logits = logits.squeeze(0)
+        invalid_actions = [a for a in range(self.action_size) if a not in potential_actions]
+        masked_logits = logits.clone()
+        if invalid_actions:
+            masked_logits[invalid_actions] = -1e9
+
+        dist = torch.distributions.Categorical(logits=masked_logits)
+        action = dist.sample()
+
+        self.last_invalid_actions = invalid_actions
+
+        action_int = action.item()
+        skill_lvl = potential_skills[potential_actions.index(action_int)]
+
+        return action_int, skill_lvl
+
+    def step(self, state, action, reward, next_state, done):
+        state_t = torch.from_numpy(state).float()
+        next_state_t = torch.from_numpy(next_state).float()
+
+        invalid_actions = self.last_invalid_actions or []
+        self.rollout_storage.append(
+            (state_t, action, reward, next_state_t, done, invalid_actions)
+        )
+        if self.memory is not None and hasattr(self.memory, "add"):
+            self.memory.add(state_t, action, reward, next_state_t, done)
+        self.last_invalid_actions = None
+
+        self.t_step += 1
+
+        if self.t_step % self.update_every == 0:
+            losses = self.learn()
+            self.rollout_storage = []
+            return losses
+
+        return None
+
+    def learn(self):
+        if not self.rollout_storage:
+            return None
+
+        states = torch.stack([m[0] for m in self.rollout_storage]).to(self.device)
+        actions = torch.tensor(
+            [m[1] for m in self.rollout_storage], dtype=torch.long, device=self.device
+        )
+        rewards = torch.tensor(
+            [m[2] for m in self.rollout_storage], dtype=torch.float32, device=self.device
+        )
+        next_states = torch.stack([m[3] for m in self.rollout_storage]).to(self.device)
+        dones = [m[4] for m in self.rollout_storage]
+        invalid_actions = [m[5] for m in self.rollout_storage]
+
+        icm_loss = 0.0
+        if self.curiosity != 0 and self.ICM is not None:
+            forward_pred_err, inverse_pred_err = self.ICM.calc_errors(
+                state1=states, state2=next_states, action=actions.unsqueeze(1)
+            )
+            intrinsic_reward = self.eta * forward_pred_err.squeeze(-1)
+            if self.curiosity == 1:
+                rewards = rewards + intrinsic_reward.detach()
+            else:
+                rewards = intrinsic_reward.detach()
+            icm_loss = self.ICM.update_ICM(forward_pred_err, inverse_pred_err)
+
+        logits, values = self.network(states)
+        masked_logits = logits.clone()
+        for i, inval in enumerate(invalid_actions):
+            if inval:
+                masked_logits[i, inval] = -1e9
+
+        dist = torch.distributions.Categorical(logits=masked_logits)
+        log_probs = dist.log_prob(actions)
+        entropy = dist.entropy().mean()
+
+        if self.munchausen:
+            rewards = rewards + self.alpha * torch.clamp(
+                log_probs.detach(), min=self.lo, max=0.0
+            )
+
+        returns = []
+        running_return = 0.0
+        for reward, done in zip(
+            reversed(rewards.detach().cpu().tolist()), reversed(dones)
+        ):
+            if done:
+                running_return = 0.0
+            running_return = reward + self.gamma * running_return
+            returns.insert(0, running_return)
+        returns = torch.tensor(returns, dtype=torch.float32, device=self.device).unsqueeze(1)
+
+        advantages = returns - values.detach()
+        if advantages.numel() > 1:
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
+
+        actor_loss = -(
+            log_probs * advantages.squeeze(-1)
+        ).mean() - self.entropy_coeff * entropy
+
+        self.actor_optimizer.zero_grad()
+        actor_loss.backward()
+        clip_grad_norm_(
+            list(self.network.actor_body.parameters())
+            + list(self.network.policy_head.parameters()),
+            self.grad_clip,
+        )
+        self.actor_optimizer.step()
+
+        self.critic_optimizer.zero_grad()
+        _, values = self.network(states)
+        critic_loss = F.mse_loss(values, returns)
+        critic_loss.backward()
+        clip_grad_norm_(
+            list(self.network.critic_body.parameters())
+            + list(self.network.value_head.parameters()),
+            self.grad_clip,
+        )
+        self.critic_optimizer.step()
+
+        return {
+            "actor_loss": actor_loss.detach().cpu().item(),
+            "critic_loss": critic_loss.detach().cpu().item(),
+            "entropy": entropy.detach().cpu().item(),
+            "icm_loss": icm_loss if isinstance(icm_loss, float) else float(icm_loss),
+        }
 
 class DQN_Agent():
     """Interacts with and learns from the environment."""
