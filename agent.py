@@ -229,6 +229,9 @@ class ActorCritic:
         )
         self.critic_optimizer.step()
 
+        # Clear rollout storage after learning to avoid reusing old trajectories
+        self.rollout_storage.clear()
+
         return {
             "actor_loss": actor_loss.detach().cpu().item(),
             "critic_loss": critic_loss.detach().cpu().item(),
