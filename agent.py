@@ -146,6 +146,9 @@ class ActorCritic:
         self.last_invalid_actions = None
 
         self.t_step += 1
+        if self.update_every and self.t_step % self.update_every == 0:
+            return self.learn()
+
         return None
 
     def learn(self):
